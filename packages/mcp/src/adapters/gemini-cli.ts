@@ -27,8 +27,9 @@ class GeminiCliMCPAdapter extends BaseMCPAdapter {
             : {}),
         };
       } else {
+        // Gemini CLI reads `url` as SSE and `httpUrl` as streamable HTTP.
         mcpServers[server.id] = {
-          url: server.transport.url,
+          [server.transport.type === "http" ? "httpUrl" : "url"]: server.transport.url,
           headers: server.transport.headers ?? {},
         };
       }
@@ -80,6 +81,16 @@ class GeminiCliMCPAdapter extends BaseMCPAdapter {
             command: config.command as string,
             args: config.args as string[] | undefined,
             env: config.env as Record<string, string> | undefined,
+          },
+        });
+      } else if (config.httpUrl) {
+        servers.push({
+          id,
+          name: id,
+          transport: {
+            type: "http",
+            url: config.httpUrl as string,
+            headers: config.headers as Record<string, string> | undefined,
           },
         });
       } else if (config.url) {

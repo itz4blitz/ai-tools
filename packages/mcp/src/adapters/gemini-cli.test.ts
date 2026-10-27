@@ -68,6 +68,17 @@ describe("GeminiCliMCPAdapter", () => {
       expect(parsed.mcpServers["sse-server"].url).toBe("http://localhost:3000");
     });
 
+    it("writes HTTP remotes as httpUrl (streamable HTTP)", async () => {
+      const httpServer: MCPServerDefinition = {
+        id: "krisp",
+        name: "Krisp",
+        transport: { type: "http", url: "https://mcp.krisp.ai/mcp" },
+      };
+      const files = await adapter.generate([httpServer]);
+      const parsed = JSON.parse(files[0]!.content);
+      expect(parsed.mcpServers.krisp).toEqual({ httpUrl: "https://mcp.krisp.ai/mcp", headers: {} });
+    });
+
     it("handles empty servers array", async () => {
       const files = await adapter.generate([]);
       const parsed = JSON.parse(files[0]!.content);
@@ -155,6 +166,19 @@ describe("GeminiCliMCPAdapter", () => {
       const result = await adapter.import("/test");
       expect(result).toHaveLength(1);
       expect(result[0]!.transport.type).toBe("sse");
+    });
+
+    it("imports httpUrl servers as http", async () => {
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFile).mockResolvedValue(
+        JSON.stringify({ mcpServers: { krisp: { httpUrl: "https://mcp.krisp.ai/mcp" } } }),
+      );
+      const result = await adapter.import("/test");
+      expect(result[0]!.transport).toEqual({
+        type: "http",
+        url: "https://mcp.krisp.ai/mcp",
+        headers: undefined,
+      });
     });
 
     it("imports with missing servers key", async () => {
