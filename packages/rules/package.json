@@ -1,6 +1,6 @@
 {
   "name": "@itz4blitz/ai-tools-rules",
-  "version": "1.2.3",
+  "version": "1.3.0",
   "private": true,
   "description": "Universal project rules configuration for AI coding tools",
   "license": "MIT",

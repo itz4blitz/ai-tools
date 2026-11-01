@@ -1,6 +1,6 @@
 {
   "name": "@itz4blitz/ai-tools-sessions",
-  "version": "1.2.3",
+  "version": "1.3.0",
   "private": true,
   "description": "Cross-tool session reading and context handoff for AI coding tools",
   "license": "MIT",

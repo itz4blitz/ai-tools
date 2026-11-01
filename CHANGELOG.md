@@ -1,3 +1,10 @@
+# [1.3.0](https://github.com/itz4blitz/ai-tools/compare/v1.2.3...v1.3.0) (2026-11-01)
+
+
+### Features
+
+* **skills:** user-layer skill install, skill folder copies, and Gemini CLI MCP fixes ([ba0e372](https://github.com/itz4blitz/ai-tools/commit/ba0e372d25bbbdc1e88e92988cbed79d6ecdad50))
+
 ## [1.2.3](https://github.com/itz4blitz/ai-tools/compare/v1.2.2...v1.2.3) (2026-09-06)
 
 

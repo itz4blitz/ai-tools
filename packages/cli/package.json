@@ -1,6 +1,6 @@
 {
   "name": "@itz4blitz/ai-tools",
-  "version": "1.2.3",
+  "version": "1.3.0",
   "description": "Unified CLI for all ai-tools engines (hooks, mcp, skills, agents, rules)",
   "license": "MIT",
   "repository": {
@@ -66,13 +66,13 @@
     "clean": "node -e \"const { rmSync } = require('node:fs'); rmSync('dist', { recursive: true, force: true });\""
   },
   "dependencies": {
-    "@itz4blitz/ai-tools-agents": "1.2.3",
-    "@itz4blitz/ai-tools-hooks": "1.2.3",
-    "@itz4blitz/ai-tools-mcp": "1.2.3",
-    "@itz4blitz/ai-tools-rules": "1.2.3",
-    "@itz4blitz/ai-tools-sessions": "1.2.3",
-    "@itz4blitz/ai-tools-skills": "1.2.3",
-    "@itz4blitz/ai-tools-tui": "1.2.3"
+    "@itz4blitz/ai-tools-agents": "1.3.0",
+    "@itz4blitz/ai-tools-hooks": "1.3.0",
+    "@itz4blitz/ai-tools-mcp": "1.3.0",
+    "@itz4blitz/ai-tools-rules": "1.3.0",
+    "@itz4blitz/ai-tools-sessions": "1.3.0",
+    "@itz4blitz/ai-tools-skills": "1.3.0",
+    "@itz4blitz/ai-tools-tui": "1.3.0"
   },
   "bundledDependencies": [
     "@itz4blitz/ai-tools-agents",
