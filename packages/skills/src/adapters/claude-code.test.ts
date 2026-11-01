@@ -88,6 +88,39 @@ describe("ClaudeCodeSkillAdapter", () => {
         expect(await readFile(skillPath, "utf-8")).toContain("name: review");
       });
     });
+
+    it("copies a sourceDir skill verbatim, supporting files included", async () => {
+      await withTempDir(async (dir) => {
+        const source = join(dir, "src/brainstorming");
+        await mkdir(join(source, "scripts"), { recursive: true });
+        const skillMd =
+          '---\nname: brainstorming\ndescription: "Use when: designing"\n---\n\nBody\n';
+        await writeFile(join(source, "SKILL.md"), skillMd);
+        await writeFile(join(source, "scripts/start.sh"), "echo hi\n");
+
+        const skill: SkillDefinition = { ...testSkill, id: "brainstorming", sourceDir: source };
+        const files = await adapter.generate([skill]);
+        expect(files.map((f) => f.path).toSorted()).toEqual([
+          ".claude/skills/brainstorming/SKILL.md",
+          ".claude/skills/brainstorming/scripts/start.sh",
+        ]);
+
+        const out = join(dir, "out");
+        await adapter.install(files, out);
+        const installed = join(out, ".claude/skills/brainstorming");
+        expect(await readFile(join(installed, "SKILL.md"), "utf-8")).toBe(skillMd);
+        expect(await readFile(join(installed, "scripts/start.sh"), "utf-8")).toBe("echo hi\n");
+      });
+    });
+  });
+
+  describe("layers", () => {
+    it("uses .claude/skills for both layers", async () => {
+      expect(adapter.skillsDir("project")).toBe(".claude/skills");
+      expect(adapter.skillsDir("user")).toBe(".claude/skills");
+      const files = await adapter.generate([testSkill], "user");
+      expect(files[0]?.path).toBe(".claude/skills/review/SKILL.md");
+    });
   });
 
   describe("import", () => {

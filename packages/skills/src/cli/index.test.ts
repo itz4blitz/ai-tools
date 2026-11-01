@@ -40,6 +40,7 @@ vi.mock("node:fs/promises", () => ({
 
 // ── Import under test ───────────────────────────────────────
 
+import { homedir } from "node:os";
 import { run } from "./index.js";
 import type { BaseSkillAdapter } from "../adapters/base.js";
 import type { SkillDefinition, GeneratedFile } from "../types/index.js";
@@ -362,5 +363,38 @@ describe("run() - flag parsing", () => {
 
     await run(["generate", "--tools=kiro", "--force"]);
     expect(allLog()).toContain("Generating skills for 1 tool(s)");
+  });
+
+  it("--layer=user generates for the user layer and installs under the home directory", async () => {
+    const generateFn = vi
+      .fn<(skills: SkillDefinition[], layer?: string) => Promise<GeneratedFile[]>>()
+      .mockResolvedValue([]);
+    const installFn = vi
+      .fn<(files: GeneratedFile[], cwd?: string) => Promise<void>>()
+      .mockResolvedValue(undefined);
+    const detectFn = vi.fn<(cwd?: string) => Promise<boolean>>().mockResolvedValue(true);
+    const adapter = makeAdapter({
+      id: "codex",
+      detect: detectFn,
+      generate: generateFn,
+      install: installFn,
+    });
+    mockRegistryGet.mockImplementation((id: string) => (id === "codex" ? adapter : undefined));
+
+    await run(["install", "--tools=codex", "--layer=user"]);
+
+    expect(detectFn).toHaveBeenCalledWith(homedir());
+    expect(generateFn).toHaveBeenCalledWith([], "user");
+    expect(installFn).toHaveBeenCalledWith([], homedir());
+  });
+
+  it("detects against the home directory for --layer=user without --tools", async () => {
+    mockRegistryDetectAll.mockResolvedValue([]);
+    await run(["install", "--layer=user"]);
+    expect(mockRegistryDetectAll).toHaveBeenCalledWith(homedir());
+  });
+
+  it("rejects an unknown --layer value", async () => {
+    await expect(run(["install", "--layer=global"])).rejects.toThrow('Invalid --layer "global"');
   });
 });

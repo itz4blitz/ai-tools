@@ -1,6 +1,7 @@
 import { registry } from "../adapters/registry.js";
 import type { BaseSkillAdapter } from "../adapters/base.js";
-import type { SkillsConfig } from "../types/index.js";
+import type { SkillLayer, SkillsConfig } from "../types/index.js";
+import { homedir } from "node:os";
 
 // Import all adapters to register them
 import "../adapters/all.js";
@@ -27,6 +28,7 @@ OPTIONS:
   --verbose   Show detailed output
   --dry-run   Show what would be generated without writing files
   --force     Skip detection checks for --tools (install even if tool not found)
+  --layer     project (default, under cwd) or user (under the home directory)
 
 EXAMPLES:
   ai-skills init                    # Create config file
@@ -42,6 +44,7 @@ type Flags = {
   verbose?: boolean;
   dryRun?: boolean;
   force?: boolean;
+  layer?: SkillLayer;
 };
 
 export async function run(args: string[]): Promise<void> {
@@ -158,7 +161,7 @@ async function cmdGenerate(flags: Flags): Promise<void> {
   console.log(`Generating skills for ${adapters.length} tool(s)...\n`);
 
   for (const adapter of adapters) {
-    const files = await adapter.generate(config.skills);
+    const files = await adapter.generate(config.skills, flags.layer);
 
     for (const file of files) {
       if (flags.dryRun) {
@@ -169,7 +172,7 @@ async function cmdGenerate(flags: Flags): Promise<void> {
     }
 
     if (!flags.dryRun) {
-      await adapter.install(files);
+      await adapter.install(files, layerRoot(flags));
     }
   }
 
@@ -189,14 +192,14 @@ async function cmdInstall(flags: Flags): Promise<void> {
   console.log(`Installing skills into ${adapters.length} tool(s)...\n`);
 
   for (const adapter of adapters) {
-    const files = await adapter.generate(config.skills);
+    const files = await adapter.generate(config.skills, flags.layer);
 
     if (flags.dryRun) {
       for (const file of files) {
         console.log(`  [dry-run] Would install: ${file.path}`);
       }
     } else {
-      await adapter.install(files);
+      await adapter.install(files, layerRoot(flags));
       console.log(`  \u2713 ${adapter.name}`);
     }
   }
@@ -234,14 +237,14 @@ async function cmdSync(flags: Flags): Promise<void> {
   console.log(`Syncing skills to ${adapters.length} tool(s)...\n`);
 
   for (const adapter of adapters) {
-    const files = await adapter.generate(config.skills);
+    const files = await adapter.generate(config.skills, flags.layer);
 
     if (flags.dryRun) {
       for (const file of files) {
         console.log(`  [dry-run] Would sync: ${file.path}`);
       }
     } else {
-      await adapter.install(files);
+      await adapter.install(files, layerRoot(flags));
       console.log(`  \u2713 ${adapter.name}`);
     }
   }
@@ -270,10 +273,21 @@ function parseFlags(args: string[]): Flags {
       flags.dryRun = true;
     } else if (arg === "--force") {
       flags.force = true;
+    } else if (arg.startsWith("--layer=")) {
+      const layer = arg.slice(8);
+      if (layer !== "user" && layer !== "project") {
+        throw new Error(`Invalid --layer "${layer}" (expected user or project)`);
+      }
+      flags.layer = layer;
     }
   }
 
   return flags;
+}
+
+/** Root that skill paths resolve against: the home directory for the user layer, else cwd. */
+function layerRoot(flags: Flags): string | undefined {
+  return flags.layer === "user" ? homedir() : undefined;
 }
 
 async function resolveAdapters(flags: Flags): Promise<BaseSkillAdapter[]> {
@@ -286,7 +300,7 @@ async function resolveAdapters(flags: Flags): Promise<BaseSkillAdapter[]> {
         console.warn(`  Warning: Unknown adapter "${id}"`);
         continue;
       }
-      if (!flags.force && !(await adapter.detect())) {
+      if (!flags.force && !(await adapter.detect(layerRoot(flags)))) {
         console.warn(`  Warning: ${adapter.name} not detected, skipping (use --force to override)`);
         continue;
       }
@@ -295,7 +309,7 @@ async function resolveAdapters(flags: Flags): Promise<BaseSkillAdapter[]> {
     return adapters;
   }
 
-  return registry.detectAll();
+  return registry.detectAll(layerRoot(flags));
 }
 
 async function loadConfig(configPath?: string): Promise<SkillsConfig> {

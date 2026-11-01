@@ -36,7 +36,7 @@ ENGINE COMMANDS:
 OPTIONS:
   --tools     Comma-separated list of tools (forwarded to engine)
   --dry-run   Show what would happen without writing files
-  --layer     user or project (MCP install/sync; forwarded)
+  --layer     user or project (MCP install/sync and skills; forwarded)
 
 EXAMPLES:
   ${cliName} mcp detect                     # Detect MCP-capable tools

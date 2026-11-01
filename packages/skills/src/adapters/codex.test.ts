@@ -40,6 +40,11 @@ describe("CodexSkillAdapter", () => {
     it("has correct name", () => expect(adapter.name).toBe("Codex"));
     it("has native support", () => expect(adapter.nativeSupport).toBe(true));
     it("has correct config dir", () => expect(adapter.configDir).toBe(".codex/skills"));
+    it("writes user-layer skills to ~/.agents/skills", async () => {
+      expect(adapter.skillsDir("user")).toBe(".agents/skills");
+      const files = await adapter.generate([testSkill], "user");
+      expect(files[0]?.path).toBe(`.agents/skills/${testSkill.id}/SKILL.md`);
+    });
   });
 
   describe("generate", () => {
