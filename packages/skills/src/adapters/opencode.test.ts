@@ -40,6 +40,11 @@ describe("OpenCodeSkillAdapter", () => {
     it("has correct name", () => expect(adapter.name).toBe("OpenCode"));
     it("has native support", () => expect(adapter.nativeSupport).toBe(true));
     it("has correct config dir", () => expect(adapter.configDir).toBe(".opencode/skills"));
+    it("writes user-layer skills to ~/.config/opencode/skills", async () => {
+      expect(adapter.skillsDir("user")).toBe(".config/opencode/skills");
+      const files = await adapter.generate([testSkill], "user");
+      expect(files[0]?.path).toBe(`.config/opencode/skills/${testSkill.id}/SKILL.md`);
+    });
   });
 
   describe("generate", () => {

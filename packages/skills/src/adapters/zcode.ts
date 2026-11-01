@@ -1,6 +1,6 @@
 import { BaseSkillAdapter } from "./base.js";
 import { registry } from "./registry.js";
-import type { SkillDefinition, GeneratedFile } from "../types/index.js";
+import type { SkillDefinition, GeneratedFile, SkillLayer } from "../types/index.js";
 import { existsSync } from "node:fs";
 import { readFile, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -12,12 +12,8 @@ class ZcodeSkillAdapter extends BaseSkillAdapter {
   readonly configDir = ".zcode/skills";
   readonly command = "zcode";
 
-  async generate(skills: SkillDefinition[]): Promise<GeneratedFile[]> {
-    return skills.map((skill) => ({
-      path: `${this.configDir}/${skill.id}/SKILL.md`,
-      content: formatSkill(skill),
-      format: "md" as const,
-    }));
+  async generate(skills: SkillDefinition[], layer?: SkillLayer): Promise<GeneratedFile[]> {
+    return this.skillFolders(skills, this.skillsDir(layer), formatSkill);
   }
 
   async import(cwd?: string): Promise<SkillDefinition[]> {
