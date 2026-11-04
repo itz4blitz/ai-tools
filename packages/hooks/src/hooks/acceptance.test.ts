@@ -1,13 +1,16 @@
-import { mkdtempSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   acceptanceSkeleton,
   applyEvidence,
+  formatOpen,
   parseAcceptance,
+  readAcceptance,
   validateAcceptanceWrite,
   writeAcceptance,
+  type AcceptanceFile,
 } from "../acceptance/acceptance.js";
 import {
   guardAcceptanceWrite,
@@ -185,5 +188,232 @@ describe("acceptance checklist", () => {
     );
     await refuseUnprovenStop.handler(stop, next);
     expect(stop.results[0]?.reason).toContain("ui-1");
+  });
+
+  it("rejects malformed items, locked edits, and unproven commands", () => {
+    expect(parseAcceptance("nope").ok).toBe(false);
+    expect(parseAcceptance("[]").ok).toBe(false);
+    expect(parseAcceptance('{"version":1,"items":[{}]}').ok).toBe(false);
+    const skeleton = acceptanceSkeleton();
+    const duplicate = structuredClone(skeleton);
+    duplicate.items.push({ ...duplicate.items[0]! });
+    expect(parseAcceptance(JSON.stringify(duplicate)).ok).toBe(false);
+    expect(parseAcceptance(JSON.stringify({ version: 1, items: ["x"] })).ok).toBe(false);
+    const blankId = structuredClone(skeleton);
+    blankId.items[0] = { ...blankId.items[0]!, id: "" };
+    expect(parseAcceptance(JSON.stringify(blankId)).ok).toBe(false);
+    const badClass = structuredClone(skeleton);
+    badClass.items[0] = {
+      ...badClass.items[0]!,
+      class: "nope" as AcceptanceFile["items"][number]["class"],
+    };
+    expect(parseAcceptance(JSON.stringify(badClass)).ok).toBe(false);
+    const blankBehavior = structuredClone(skeleton);
+    blankBehavior.items[0] = { ...blankBehavior.items[0]!, behavior: " " };
+    expect(parseAcceptance(JSON.stringify(blankBehavior)).ok).toBe(false);
+    const badPasses = structuredClone(skeleton);
+    (badPasses.items[0] as { passes: unknown }).passes = "no";
+    expect(parseAcceptance(JSON.stringify(badPasses)).ok).toBe(false);
+    const badExcerpt = structuredClone(skeleton);
+    (badExcerpt.items[0] as { excerpt: unknown }).excerpt = 1;
+    expect(parseAcceptance(JSON.stringify(badExcerpt)).ok).toBe(false);
+
+    const extra = structuredClone(skeleton);
+    extra.items.push({
+      id: "requested-2",
+      class: "requested",
+      behavior: "REPLACE: requested",
+      passes: false,
+    });
+    const removed = { ...extra, items: extra.items.filter((item) => item.id !== "requested-2") };
+    expect(validateAcceptanceWrite(extra, removed).ok).toBe(false);
+    const reclassed = structuredClone(extra);
+    reclassed.items[0] = { ...reclassed.items[0]!, class: "ui" };
+    expect(validateAcceptanceWrite(extra, reclassed).ok).toBe(false);
+
+    const proved = structuredClone(skeleton);
+    proved.items[0] = {
+      ...proved.items[0]!,
+      behavior: "Save persists a row.",
+      passes: true,
+      excerpt: "acceptance:requested-1",
+    };
+    expect(validateAcceptanceWrite(proved, structuredClone(proved)).ok).toBe(true);
+
+    const open = acceptanceSkeleton();
+    open.items[0] = { ...open.items[0]!, behavior: "Save persists a row.", passes: true };
+    expect(
+      applyEvidence(open, { requested: "npm test" }, "npm test", 1, "acceptance:requested-1")
+        .items[0]!.passes,
+    ).toBe(true);
+    const unchanged = applyEvidence(
+      skeleton,
+      { requested: "npm test" },
+      "npm   test",
+      0,
+      "acceptance:requested-1",
+    );
+    expect(unchanged.items[0]!.passes).toBe(false);
+    expect(formatOpen(open.items, {}).includes("no command is configured")).toBe(true);
+    const already = structuredClone(open);
+    already.items[0] = { ...already.items[0]!, excerpt: "acceptance:requested-1" };
+    expect(
+      applyEvidence(already, { requested: "npm test" }, "npm test", 0, "acceptance:requested-1")
+        .items[0]!.excerpt,
+    ).toBe("acceptance:requested-1");
+    expect(applyEvidence(open, {}, "npm test", 0, "acceptance:requested-1").items[0]!.passes).toBe(
+      true,
+    );
+  });
+
+  it("guards writes, reminds on an open list, and ignores a stop with no list", async () => {
+    const dir = cwd();
+    mkdirSync(join(dir, ".ai-tools"), { recursive: true });
+    let continued = false;
+    const allow = async () => {
+      continued = true;
+    };
+
+    const commands = ctx(
+      {
+        type: "file:write",
+        path: join(dir, ".ai-tools", "acceptance-commands.json"),
+        content: "{}",
+        timestamp: 0,
+        metadata: {},
+      },
+      dir,
+    );
+    await guardAcceptanceWrite.handler(commands, allow);
+    expect(commands.results[0]?.blocked).toBe(true);
+
+    continued = false;
+    const other = ctx(
+      {
+        type: "file:write",
+        path: join(dir, "src", "row.ts"),
+        content: "export {}",
+        timestamp: 0,
+        metadata: {},
+      },
+      dir,
+    );
+    await guardAcceptanceWrite.handler(other, allow);
+    expect(continued).toBe(true);
+    await noteUiSurface.handler(other, allow);
+    expect(existsSync(join(dir, ".ai-tools", "acceptance-ui"))).toBe(false);
+
+    const broken = ctx(
+      {
+        type: "file:edit",
+        path: join(dir, ".ai-tools", "acceptance.json"),
+        oldContent: "",
+        newContent: "{",
+        timestamp: 0,
+        metadata: {},
+      },
+      dir,
+    );
+    await guardAcceptanceWrite.handler(broken, allow);
+    expect(broken.results[0]?.reason).toContain("not JSON");
+
+    writeFileSync(join(dir, ".ai-tools", "acceptance.json"), "{");
+    expect(readAcceptance(dir)).toBeNull();
+
+    continued = false;
+    const valid = ctx(
+      {
+        type: "file:write",
+        path: ".ai-tools/acceptance.json",
+        content: JSON.stringify(acceptanceSkeleton()),
+        timestamp: 0,
+        metadata: {},
+      },
+      dir,
+    );
+    await guardAcceptanceWrite.handler(valid, allow);
+    expect(continued).toBe(true);
+
+    writeAcceptance(dir, acceptanceSkeleton());
+    const prompt = ctx(
+      { type: "prompt:submit", prompt: "keep going", timestamp: 0, metadata: {} },
+      dir,
+    );
+    continued = false;
+    await remindAcceptance.handler(prompt, allow);
+    expect(prompt.results[0]?.data?.additionalContext).toContain("requested-1");
+    expect(continued).toBe(true);
+
+    const started = ctx(
+      {
+        type: "session:start",
+        tool: "claude-code",
+        version: "1.0",
+        workingDirectory: dir,
+        timestamp: 0,
+        metadata: {},
+      },
+      dir,
+    );
+    await remindAcceptance.handler(started, allow);
+    expect(started.results[0]?.data?.additionalContext).toContain("no command is configured");
+
+    const quiet = ctx(
+      { type: "session:end", tool: "codex", duration: 0, timestamp: 0, metadata: {} },
+      cwd(),
+    );
+    await refuseUnprovenStop.handler(quiet, allow);
+    expect(quiet.results).toHaveLength(0);
+
+    const shell = ctx(
+      {
+        type: "shell:after",
+        command: "npm test",
+        cwd: dir,
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+        duration: 1,
+        timestamp: 0,
+        metadata: {},
+      },
+      cwd(),
+    );
+    await recordAcceptanceEvidence.handler(shell, allow);
+    expect(shell.results).toHaveLength(0);
+
+    const missing = ctx(
+      {
+        type: "file:delete",
+        path: join(dir, ".ai-tools", "acceptance.json"),
+        timestamp: 0,
+        metadata: {},
+      },
+      dir,
+    );
+    await guardAcceptanceWrite.handler(missing, allow);
+    expect(missing.results[0]?.reason).toContain("not JSON");
+
+    const uiDir = cwd();
+    await noteUiSurface.handler(
+      ctx(
+        {
+          type: "file:write",
+          path: join(uiDir, "App.tsx"),
+          content: "export {}",
+          timestamp: 0,
+          metadata: {},
+        },
+        uiDir,
+      ),
+      allow,
+    );
+    const uiStop = ctx(
+      { type: "session:end", tool: "cursor", duration: 0, timestamp: 0, metadata: {} },
+      uiDir,
+    );
+    await refuseUnprovenStop.handler(uiStop, allow);
+    expect(uiStop.results[0]?.blocked).toBe(true);
+    expect(uiStop.results[0]?.reason).toContain("ui item");
   });
 });
