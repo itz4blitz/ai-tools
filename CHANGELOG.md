@@ -1,3 +1,10 @@
+# [1.4.0](https://github.com/itz4blitz/ai-tools/compare/v1.3.0...v1.4.0) (2026-11-04)
+
+
+### Features
+
+* **hooks:** refuse to finish while acceptance items are unproven ([736e958](https://github.com/itz4blitz/ai-tools/commit/736e958bf20e81741ab5c9135c01834367ae22b6))
+
 # [1.3.0](https://github.com/itz4blitz/ai-tools/compare/v1.2.3...v1.3.0) (2026-11-01)
 
 
