@@ -25,7 +25,14 @@ export {
   protectGitignored,
   auditShellCommands,
   builtinHooks,
+  guardAcceptanceWrite,
+  noteUiSurface,
+  recordAcceptanceEvidence,
+  remindAcceptance,
+  refuseUnprovenStop,
+  acceptanceHooks,
 } from "./hooks/index.js";
+export { acceptanceSkeleton } from "./acceptance/acceptance.js";
 
 // Types (re-export everything)
 export type {

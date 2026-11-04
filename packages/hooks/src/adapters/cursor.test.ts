@@ -1,3 +1,4 @@
+import { isAbsolute, sep } from "node:path";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { HookContext, HookDefinition, HookEventType } from "../index.js";
 
@@ -346,7 +347,8 @@ describe("CursorAdapter", () => {
       };
       const firstEvent = Object.keys(parsed.hooks)[0]!;
       const command = parsed.hooks[firstEvent]![0]!.command;
-      expect(command).toMatch(/^node \//);
+      expect(command.startsWith("node ")).toBe(true);
+      expect(isAbsolute(command.slice("node ".length))).toBe(true);
     });
 
     it("generates hooks.json at correct path", async () => {
@@ -393,9 +395,12 @@ describe("CursorAdapter", () => {
       };
       const entry = parsed.hooks.beforeShellExecution;
       expect(entry![0]!.command).toContain("ai-tools-hooks-runner.js beforeShellExecution");
-      expect(entry![0]!.command).toMatch(
-        /^node \/.*\.cursor\/hooks\/ai-tools-hooks-runner\.js beforeShellExecution$/,
-      );
+      const suffix = `${sep}.cursor${sep}hooks${sep}ai-tools-hooks-runner.js beforeShellExecution`;
+      expect(entry![0]!.command.startsWith("node ")).toBe(true);
+      expect(entry![0]!.command.endsWith(suffix)).toBe(true);
+      expect(
+        isAbsolute(entry![0]!.command.slice("node ".length, -" beforeShellExecution".length)),
+      ).toBe(true);
     });
 
     it("maps multiple hook events to correct native events", async () => {
