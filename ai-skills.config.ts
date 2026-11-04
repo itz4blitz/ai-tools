@@ -97,5 +97,14 @@ If any stage fails:
 
 Do not stop until all four stages pass with zero errors and zero warnings.`,
     },
+    {
+      id: "acceptance-list",
+      name: "Finish the whole feature",
+      content: `Before editing, write \`.ai-tools/acceptance.json\` with \`version: 1\` and one item for each class: \`requested\`, \`empty\`, \`error\`, \`shared-state\`, \`regression\`. If you will touch UI, also add class \`ui\`.
+
+Each item is \`{ "id", "class", "behavior", "passes": false }\`. \`behavior\` is an observable outcome, not a task name. Replace the \`REPLACE:\` placeholder. Do not set \`passes\` to true. Do not remove an item later. Do not write \`.ai-tools/acceptance-commands.json\`; the user owns the command prefix for each class.
+
+A command proves an item only when it matches that prefix, exits 0, and its stdout contains \`acceptance:<id>\`. Put that id on the assertion that checks the behavior, not on a log line by itself. Do not stop while any item is open.`,
+    },
   ],
 });

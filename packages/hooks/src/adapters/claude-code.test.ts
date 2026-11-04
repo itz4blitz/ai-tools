@@ -1,3 +1,4 @@
+import { isAbsolute } from "node:path";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { HookContext, HookDefinition, HookEventType } from "../index.js";
 
@@ -101,6 +102,7 @@ describe("ClaudeCodeAdapter", () => {
     it("lists all supported events", () => {
       const expected: HookEventType[] = [
         "session:start",
+        "session:end",
         "prompt:submit",
         "tool:before",
         "tool:after",
@@ -144,8 +146,8 @@ describe("ClaudeCodeAdapter", () => {
       expect(adapter.mapEvent("session:start")).toEqual(["SessionStart"]);
     });
 
-    it("maps session:end to empty array (unsupported)", () => {
-      expect(adapter.mapEvent("session:end")).toEqual([]);
+    it("maps session:end to Stop", () => {
+      expect(adapter.mapEvent("session:end")).toEqual(["Stop"]);
     });
 
     it("maps prompt:submit to UserPromptSubmit", () => {
@@ -214,6 +216,10 @@ describe("ClaudeCodeAdapter", () => {
 
     it("maps UserPromptSubmit to prompt:submit", () => {
       expect(adapter.mapNativeEvent("UserPromptSubmit")).toEqual(["prompt:submit"]);
+    });
+
+    it("maps Stop to session:end", () => {
+      expect(adapter.mapNativeEvent("Stop")).toEqual(["session:end"]);
     });
 
     it("maps PreToolUse to multiple universal events", () => {
@@ -346,7 +352,8 @@ describe("ClaudeCodeAdapter", () => {
       const hooks = parsed.hooks as Record<string, Array<{ hooks: Array<{ command: string }> }>>;
       const firstEvent = Object.keys(hooks)[0]!;
       const command = hooks[firstEvent]![0]!.hooks[0]!.command;
-      expect(command).toMatch(/^node \//);
+      expect(command.startsWith("node ")).toBe(true);
+      expect(isAbsolute(command.slice("node ".length))).toBe(true);
     });
 
     it("generates settings.json at correct path", async () => {
@@ -442,20 +449,20 @@ describe("ClaudeCodeAdapter", () => {
       expect(parsed.hooks.PreToolUse).toHaveLength(1);
     });
 
-    it("returns empty hooks config for hooks with no native event mappings", async () => {
-      const unmappedHook: HookDefinition = {
-        id: "unmapped",
-        name: "Unmapped Hook",
+    it("maps a session:end hook to Stop", async () => {
+      const stopHook: HookDefinition = {
+        id: "stop",
+        name: "Stop Hook",
         events: ["session:end"],
         phase: "after",
         handler: makeHandler(),
       };
-      const configs = await adapter.generate([unmappedHook]);
+      const configs = await adapter.generate([stopHook]);
       const settings = configs.find((c) => c.path.includes("settings"));
       const parsed = JSON.parse(settings!.content) as {
         hooks: Record<string, unknown[]>;
       };
-      expect(Object.keys(parsed.hooks)).toHaveLength(0);
+      expect(parsed.hooks.Stop).toHaveLength(1);
     });
 
     it("generates config for empty hooks array", async () => {

@@ -208,6 +208,13 @@ async function run() {
   const results = await engine.emit(event, toolInfo);
   const blocked = results.find((r) => r.blocked);
 
+  if (blocked && hookEventName === "stop") {
+    process.stdout.write(JSON.stringify({
+      followup_message: blocked.reason ?? "Blocked by ai-hooks",
+    }));
+    process.exit(0);
+  }
+
   if (blocked) {
     const response = JSON.stringify({
       permission: "deny",

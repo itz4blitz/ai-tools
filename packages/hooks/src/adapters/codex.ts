@@ -374,7 +374,7 @@ async function run() {
   }
 
   const blocked = results.find((result) => result.blocked);
-  if (blocked && (hookEventName === "PreToolUse" || hookEventName === "UserPromptSubmit")) {
+  if (blocked && (hookEventName === "PreToolUse" || hookEventName === "UserPromptSubmit" || hookEventName === "Stop")) {
     process.stderr.write(blocked.reason ?? "Blocked by ai-hooks");
     process.exit(2);
   }

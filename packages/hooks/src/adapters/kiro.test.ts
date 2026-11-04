@@ -1,3 +1,4 @@
+import { isAbsolute } from "node:path";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { HookContext, HookDefinition, HookEventType } from "../index.js";
 
@@ -376,7 +377,8 @@ describe("KiroAdapter", () => {
       };
       const firstEvent = Object.keys(parsed.hooks)[0]!;
       const command = parsed.hooks[firstEvent]![0]!.command;
-      expect(command).toMatch(/^node \//);
+      expect(command.startsWith("node ")).toBe(true);
+      expect(isAbsolute(command.slice("node ".length))).toBe(true);
     });
 
     it("generates hooks JSON at correct path", async () => {

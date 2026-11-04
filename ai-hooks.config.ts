@@ -1,20 +1,10 @@
-import { defineConfig, hook, builtinHooks } from "@itz4blitz/ai-tools-hooks";
+import { defineConfig, acceptanceHooks, builtinHooks } from "@itz4blitz/ai-tools-hooks";
 
 export default defineConfig({
   // Start with built-in security hooks
   extends: [{ hooks: builtinHooks }],
 
-  hooks: [
-    // Add your custom hooks here:
-    //
-    // hook("before", ["shell:before"], async (ctx, next) => {
-    //   console.log("Running:", ctx.event.command);
-    //   await next();
-    // })
-    //   .id("my-hook")
-    //   .name("Log Shell Commands")
-    //   .build(),
-  ],
+  hooks: [...acceptanceHooks],
 
   settings: {
     logLevel: "warn",

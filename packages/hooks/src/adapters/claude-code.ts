@@ -14,7 +14,7 @@ import { readFile } from "node:fs/promises";
  */
 const EVENT_MAP: Record<string, string[]> = {
   "session:start": ["SessionStart"],
-  "session:end": [],
+  "session:end": ["Stop"],
   "prompt:submit": ["UserPromptSubmit"],
   "prompt:response": ["PostToolUse"], // approximate - Claude doesn't expose response directly
   "tool:before": ["PreToolUse"],
@@ -33,6 +33,7 @@ const EVENT_MAP: Record<string, string[]> = {
 const REVERSE_MAP: Record<string, HookEventType[]> = {
   SessionStart: ["session:start"],
   UserPromptSubmit: ["prompt:submit"],
+  Stop: ["session:end"],
   PreToolUse: [
     "tool:before",
     "file:write",
@@ -63,6 +64,7 @@ class ClaudeCodeAdapter extends BaseAdapter {
     configFile: true,
     supportedEvents: [
       "session:start",
+      "session:end",
       "prompt:submit",
       "tool:before",
       "tool:after",
@@ -167,13 +169,23 @@ async function run() {
   // Check for blocks
   const blocked = results.find((r) => r.blocked);
   if (blocked) {
-    // Claude Code reads stdout JSON for hook results
+    // Claude Code reads stdout JSON for hook results, including Stop.
     const output = JSON.stringify({
       decision: "block",
       reason: blocked.reason ?? "Blocked by ai-hooks",
     });
     process.stdout.write(output);
     process.exit(0);
+  }
+
+  const note = results.find((r) => r.data && r.data.additionalContext);
+  if (note && (hookEvent === "UserPromptSubmit" || hookEvent === "SessionStart")) {
+    process.stdout.write(JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: hookEvent,
+        additionalContext: note.data.additionalContext,
+      },
+    }));
   }
 
   process.exit(0);
@@ -204,6 +216,14 @@ function buildEvent(hookEvent, toolName, inputJson) {
         return {
           type: "prompt:submit",
           prompt: input.prompt ?? "",
+          timestamp,
+          metadata,
+        };
+      case "Stop":
+        return {
+          type: "session:end",
+          tool: "claude-code",
+          duration: 0,
           timestamp,
           metadata,
         };
