@@ -17,7 +17,7 @@ vi.mock("node:fs/promises", () => ({
 }));
 
 vi.mock("node:child_process", () => ({
-  exec: vi.fn((_cmd: string, callback: (error: Error | null) => void) => {
+  execFile: vi.fn((_cmd: string, _args: string[], callback: (error: Error | null) => void) => {
     callback(new Error("not found"));
   }),
 }));
@@ -190,8 +190,8 @@ describe("ClaudeCodeRuleAdapter", () => {
     });
 
     it("returns true when configDir missing but command exists", async () => {
-      const { exec } = await import("node:child_process");
-      vi.mocked(exec).mockImplementation((_cmd: unknown, callback: unknown) => {
+      const { execFile } = await import("node:child_process");
+      vi.mocked(execFile).mockImplementation((_cmd: unknown, _args: unknown, callback: unknown) => {
         (callback as (error: Error | null) => void)(null);
         return undefined as never;
       });

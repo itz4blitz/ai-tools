@@ -57,6 +57,7 @@ export function createMarkdownAdapter(config: MarkdownAdapterConfig) {
 
 function formatAgent(agent: AgentDefinition): string {
   const frontmatter: Record<string, unknown> = {};
+  if (agent.name) frontmatter.name = agent.name;
   if (agent.description) frontmatter.description = agent.description;
   if (agent.tools?.length) frontmatter.tools = agent.tools;
   if (agent.model) frontmatter.model = agent.model;
@@ -78,23 +79,35 @@ function formatAgent(agent: AgentDefinition): string {
   return md;
 }
 
-function parseAgent(id: string, raw: string): AgentDefinition {
-  const agent: AgentDefinition = { id, name: id, instructions: "" };
+function parseInlineTools(value: string): string[] {
+  const stripped = value.startsWith("[") && value.endsWith("]") ? value.slice(1, -1) : value;
+  return stripped
+    .split(",")
+    .map((item) => item.trim().replace(/^["']|["']$/g, ""))
+    .filter((item) => item.length > 0);
+}
 
-  if (raw.startsWith("---")) {
-    const endIdx = raw.indexOf("---", 3);
+function parseAgent(id: string, raw: string): AgentDefinition {
+  const normalized = raw.replace(/\r\n/g, "\n");
+  const agent: AgentDefinition = { id, name: id, instructions: "" };
+  let hasFrontmatterName = false;
+
+  if (normalized.startsWith("---")) {
+    const endIdx = normalized.indexOf("---", 3);
     if (endIdx !== -1) {
-      const fm = raw.slice(3, endIdx).trim();
-      const body = raw.slice(endIdx + 3).trim();
+      const fm = normalized.slice(3, endIdx).trim();
+      const body = normalized.slice(endIdx + 3).trim();
 
       // Simple YAML-like parsing
-      const lines = fm.split("\n");
+      const lines = fm.split(/\r?\n/);
       let currentKey = "";
       let currentArray: string[] = [];
 
       for (const line of lines) {
-        if (line.startsWith("  - ")) {
-          currentArray.push(line.slice(4).trim());
+        const listMatch = /^\s+-\s+(.*)$/.exec(line);
+        if (listMatch) {
+          const item = listMatch[1]?.trim();
+          if (item) currentArray.push(item);
         } else {
           if (currentKey && currentArray.length > 0) {
             if (currentKey === "tools") agent.tools = currentArray;
@@ -105,8 +118,17 @@ function parseAgent(id: string, raw: string): AgentDefinition {
             currentKey = line.slice(0, colonIdx).trim();
             const value = line.slice(colonIdx + 1).trim();
             if (value) {
-              if (currentKey === "description") agent.description = value;
-              if (currentKey === "model") agent.model = value;
+              if (currentKey === "name") {
+                agent.name = value;
+                hasFrontmatterName = true;
+              } else if (currentKey === "description") {
+                agent.description = value;
+              } else if (currentKey === "model") {
+                agent.model = value;
+              } else if (currentKey === "tools") {
+                const parsedTools = parseInlineTools(value);
+                if (parsedTools.length > 0) agent.tools = parsedTools;
+              }
             }
           }
         }
@@ -116,10 +138,12 @@ function parseAgent(id: string, raw: string): AgentDefinition {
       }
 
       // Parse body
-      const bodyLines = body.split("\n");
+      const bodyLines = body.split(/\r?\n/);
       let contentStart = 0;
       if (bodyLines[0]?.startsWith("# ")) {
-        agent.name = bodyLines[0].slice(2).trim();
+        if (!hasFrontmatterName) {
+          agent.name = bodyLines[0].slice(2).trim();
+        }
         contentStart = 1;
         if (bodyLines[contentStart]?.trim() === "") contentStart++;
       }
@@ -127,7 +151,7 @@ function parseAgent(id: string, raw: string): AgentDefinition {
     }
   } else {
     // No frontmatter, try to parse just body
-    const bodyLines = raw.split("\n");
+    const bodyLines = normalized.split(/\r?\n/);
     let contentStart = 0;
     if (bodyLines[0]?.startsWith("# ")) {
       agent.name = bodyLines[0].slice(2).trim();

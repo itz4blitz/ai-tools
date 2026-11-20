@@ -223,7 +223,7 @@ describe("cmdInstall", () => {
     mockIsCanonical.mockResolvedValue(true);
     mockReadManifest.mockResolvedValue({ version: 1, entries: [] });
     mockExistsSync.mockImplementation((path: unknown) => {
-      const value = String(path);
+      const value = String(path).replaceAll("\\", "/");
       return value.endsWith("/.claude") || value.endsWith("/.grok") || value.endsWith("/.zcode");
     });
 
@@ -298,7 +298,7 @@ describe("cmdStatus", () => {
     mockHasManagedBlock.mockResolvedValue(false);
     mockReadManifest.mockResolvedValue({ version: 1, entries: [] });
     mockExistsSync.mockImplementation((path: unknown) => {
-      const p = String(path);
+      const p = String(path).replaceAll("\\", "/");
       // Check that path ends with the tool directory (not just contains)
       return p.endsWith("/.claude") || p.endsWith("/.claude/");
     });

@@ -66,7 +66,7 @@ export const KNOWN_PLUGIN_HOSTS: Record<string, PluginHostInfo> = {
     supportsInteractiveApps: false,
     supportsNativeBundles: true,
     notes:
-      "Grok reads project `.grok/config.toml` and user `~/.grok/config.toml`. MCP lives under [mcp_servers]. PalamHealth servers must be project-layer.",
+      "Grok reads project `.grok/config.toml` and user `~/.grok/config.toml`. MCP lives under [mcp_servers]. Keep project-scoped servers in the project layer.",
   },
   zcode: {
     id: "zcode",
@@ -76,7 +76,7 @@ export const KNOWN_PLUGIN_HOSTS: Record<string, PluginHostInfo> = {
     supportsInteractiveApps: false,
     supportsNativeBundles: false,
     notes:
-      "ZCode user MCP is ~/.zcode/cli/config.json (mcp.servers). Project MCP is .zcode/mcp.json. Hooks live in .zcode/config.json and .zcode/hooks.json. Do not put PalamHealth in the user file.",
+      "ZCode user MCP is ~/.zcode/cli/config.json (mcp.servers). Project MCP is .zcode/mcp.json. Hooks live in .zcode/config.json and .zcode/hooks.json. Keep project-scoped servers out of the user file.",
   },
   "antigravity-cli": {
     id: "antigravity-cli",

@@ -34,7 +34,7 @@ describe("defineConfig", () => {
           enabled: true,
           tags: ["dev", "test"],
           layer: "project",
-          whenPathContains: ["PalamHealth"],
+          whenPathContains: ["AcmeCorp"],
         },
       ],
     };
@@ -43,6 +43,6 @@ describe("defineConfig", () => {
     expect(result.servers[0]!.description).toBe("A test server");
     expect(result.servers[0]!.tags).toEqual(["dev", "test"]);
     expect(result.servers[0]!.layer).toBe("project");
-    expect(result.servers[0]!.whenPathContains).toEqual(["PalamHealth"]);
+    expect(result.servers[0]!.whenPathContains).toEqual(["AcmeCorp"]);
   });
 });

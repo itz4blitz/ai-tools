@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { join, resolve } from "node:path";
 
 const existsSync = vi.fn();
 const mkdir = vi.fn();
@@ -120,13 +121,13 @@ describe("ui-cache", () => {
       tools: "2026-06-02T13:59:59.000Z",
     });
 
-    expect(mkdir).toHaveBeenCalledWith(expect.stringContaining(".ai-tools/ui-cache"), {
+    expect(mkdir).toHaveBeenCalledWith(expect.stringContaining(join(".ai-tools", "ui-cache")), {
       recursive: true,
     });
     const written = JSON.parse(writeFile.mock.calls[0]![1] as string);
     expect(written).toMatchObject({
       version: 1,
-      cwd: "/repo",
+      cwd: resolve("/repo"),
       data,
       slices: {
         tools: "2026-06-02T13:59:59.000Z",

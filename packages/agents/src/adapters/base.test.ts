@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { join, resolve } from "node:path";
 import { BaseAgentAdapter } from "./base.js";
 import type { AgentDefinition, GeneratedFile } from "../types/index.js";
 
@@ -77,13 +78,15 @@ describe("BaseAgentAdapter", () => {
     it("uses provided cwd to resolve configDir", async () => {
       mockedExistsSync.mockReturnValue(true);
       await adapter.detect("/custom/dir");
-      expect(mockedExistsSync).toHaveBeenCalledWith(expect.stringContaining("custom/dir"));
+      expect(mockedExistsSync).toHaveBeenCalledWith(expect.stringContaining(join("custom", "dir")));
     });
 
     it("uses process.cwd() when no cwd is provided", async () => {
       mockedExistsSync.mockReturnValue(false);
       await adapter.detect();
-      expect(mockedExistsSync).toHaveBeenCalledWith(expect.stringContaining(adapter.configDir));
+      expect(mockedExistsSync).toHaveBeenCalledWith(
+        expect.stringContaining(join(".test", "agents")),
+      );
     });
   });
 
@@ -135,9 +138,12 @@ describe("BaseAgentAdapter", () => {
 
       await adapter.install(files);
 
-      expect(mockedMkdir).toHaveBeenCalledWith(expect.stringContaining("deep/nested/dir"), {
-        recursive: true,
-      });
+      expect(mockedMkdir).toHaveBeenCalledWith(
+        expect.stringContaining(join("deep", "nested", "dir")),
+        {
+          recursive: true,
+        },
+      );
     });
 
     it("handles empty file array", async () => {
@@ -155,7 +161,7 @@ describe("BaseAgentAdapter", () => {
       await adapter.install(files, "/custom/project");
 
       expect(mockedWriteFile).toHaveBeenCalledWith(
-        expect.stringContaining("/custom/project"),
+        expect.stringContaining(resolve("/custom/project")),
         "test",
         "utf-8",
       );

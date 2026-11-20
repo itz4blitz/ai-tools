@@ -15,7 +15,7 @@ const stdio: MCPServerDefinition = {
   name: "github",
   transport: {
     type: "stdio",
-    command: "/home/blitz/.local/bin/gh-mcp",
+    command: "/usr/local/bin/gh-mcp",
     args: ["--verbose"],
     env: { TOKEN: "secret" },
   },
@@ -62,7 +62,7 @@ describe("MCP adapter filesystem round-trips", () => {
         mcpServers: Record<string, Record<string, unknown>>;
       };
       expect(parsed.mcpServers.github).toMatchObject({
-        command: "/home/blitz/.local/bin/gh-mcp",
+        command: "/usr/local/bin/gh-mcp",
         args: ["--verbose"],
         env: { TOKEN: "secret" },
       });
@@ -80,7 +80,7 @@ describe("MCP adapter filesystem round-trips", () => {
       expect(imported.find((s) => s.id === "events")?.transport.type).toBe("sse");
       expect(imported.find((s) => s.id === "github")?.transport).toMatchObject({
         type: "stdio",
-        command: "/home/blitz/.local/bin/gh-mcp",
+        command: "/usr/local/bin/gh-mcp",
         args: ["--verbose"],
         env: { TOKEN: "secret" },
       });
@@ -196,7 +196,7 @@ describe("MCP adapter filesystem round-trips", () => {
       };
       expect(parsed.mcp.servers.github).toMatchObject({
         type: "stdio",
-        command: "/home/blitz/.local/bin/gh-mcp",
+        command: "/usr/local/bin/gh-mcp",
         args: ["--verbose"],
         env: { TOKEN: "secret" },
       });
@@ -233,7 +233,7 @@ describe("MCP adapter filesystem round-trips", () => {
       expect(parsed.model).toBe("keep-me");
       expect(parsed.mcp.servers.keep?.command).toBe("old");
       expect(parsed.mcp.servers.github?.type).toBe("stdio");
-      expect(parsed.mcp.servers.github?.command).toBe("/home/blitz/.local/bin/gh-mcp");
+      expect(parsed.mcp.servers.github?.command).toBe("/usr/local/bin/gh-mcp");
     });
 
     it("imports host files that omit type", async () => {
@@ -267,7 +267,7 @@ describe("MCP adapter filesystem round-trips", () => {
       await adapter.install(await adapter.generate([stdio, http]), cwd);
       const raw = await readFile(join(cwd, ".grok/config.toml"), "utf-8");
       expect(raw).toContain("[mcp_servers.github]");
-      expect(raw).toContain('command = "/home/blitz/.local/bin/gh-mcp"');
+      expect(raw).toContain('command = "/usr/local/bin/gh-mcp"');
       expect(raw).toContain('args = ["--verbose"]');
       expect(raw).toContain("[mcp_servers.github.env]");
       expect(raw).toContain('TOKEN = "secret"');
@@ -304,7 +304,7 @@ describe("MCP adapter filesystem round-trips", () => {
       const raw = await readFile(join(cwd, ".codex/config.toml"), "utf-8");
       expect(raw.startsWith("{")).toBe(false);
       expect(raw).toContain("[mcp_servers.github]");
-      expect(raw).toContain('command = "/home/blitz/.local/bin/gh-mcp"');
+      expect(raw).toContain('command = "/usr/local/bin/gh-mcp"');
       expect(raw).toContain('args = ["--verbose"]');
       expect(raw).toContain("[mcp_servers.github.env]");
       expect(raw).toContain('TOKEN = "secret"');
@@ -341,7 +341,7 @@ describe("MCP adapter filesystem round-trips", () => {
       };
       expect(parsed.mcp.github).toMatchObject({
         type: "local",
-        command: ["/home/blitz/.local/bin/gh-mcp", "--verbose"],
+        command: ["/usr/local/bin/gh-mcp", "--verbose"],
         environment: { TOKEN: "secret" },
       });
       expect(parsed.mcp.linear).toMatchObject({
@@ -352,7 +352,7 @@ describe("MCP adapter filesystem round-trips", () => {
       const imported = await adapter.import(cwd);
       expect(imported.find((s) => s.id === "github")?.transport).toMatchObject({
         type: "stdio",
-        command: "/home/blitz/.local/bin/gh-mcp",
+        command: "/usr/local/bin/gh-mcp",
         args: ["--verbose"],
         env: { TOKEN: "secret" },
       });

@@ -438,10 +438,10 @@ describe("run() - install command", () => {
   });
 
   it("honors --layer and whenPathContains from mcp.config.ts like sync", async () => {
-    const palamhealth = stdioServer("palamhealth", {
+    const acme = stdioServer("acme", {
       layer: "project",
-      whenPathContains: ["PalamHealth"],
-      transport: { type: "stdio", command: "/home/blitz/.local/bin/op-run-palamhealth" },
+      whenPathContains: ["AcmeCorp"],
+      transport: { type: "stdio", command: "/usr/local/bin/op-run-acme" },
     });
     const github = stdioServer("github", {
       layer: "project",
@@ -458,12 +458,10 @@ describe("run() - install command", () => {
       install: installFn,
     });
     mockRegistryDetectAll.mockResolvedValue([adapter]);
-    const cwdSpy = vi
-      .spyOn(process, "cwd")
-      .mockReturnValue("/home/blitz/Development/PremierStudio/web");
+    const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue("/workspace/Development/OtherOrg/web");
 
     try {
-      await withConfig([palamhealth, github], async (configPath) => {
+      await withConfig([acme, github], async (configPath) => {
         await run(["install", `--config=${configPath}`, "--layer=project"]);
       });
     } finally {
@@ -473,9 +471,9 @@ describe("run() - install command", () => {
     expect(generateFn.mock.calls[0]![0]!.map((s) => s.id)).toEqual(["github"]);
     expect(installFn).toHaveBeenCalledWith(
       [{ path: ".mcp.json", content: encodedMcpContent([github]), format: "json" }],
-      "/home/blitz/Development/PremierStudio/web",
+      "/workspace/Development/OtherOrg/web",
     );
-    expect(installFn.mock.calls[0]![0]![0]!.content).not.toContain("palamhealth");
+    expect(installFn.mock.calls[0]![0]![0]!.content).not.toContain("acme");
   });
 
   it("refuses to install an empty server list that would wipe tool configs", async () => {
@@ -570,12 +568,12 @@ describe("run() - import command", () => {
 });
 
 describe("run() - sync command", () => {
-  const palamhealth = stdioServer("palamhealth", {
+  const acme = stdioServer("acme", {
     layer: "project",
-    whenPathContains: ["PalamHealth"],
+    whenPathContains: ["AcmeCorp"],
     transport: {
       type: "stdio",
-      command: "/home/blitz/.local/bin/op-run-palamhealth",
+      command: "/usr/local/bin/op-run-acme",
     },
   });
   const github = stdioServer("github", {
@@ -598,7 +596,7 @@ describe("run() - sync command", () => {
   it("refuses to copy imported servers when mcp.config.ts is missing", async () => {
     const importFn = vi
       .fn<(cwd?: string) => Promise<MCPServerDefinition[]>>()
-      .mockResolvedValue([palamhealth]);
+      .mockResolvedValue([acme]);
     const generateFn = encodeGenerate(".zcode/mcp.json");
     const installFn = vi
       .fn<(files: GeneratedFile[], cwd?: string) => Promise<void>>()
@@ -637,7 +635,7 @@ describe("run() - sync command", () => {
   it("refuses when the config exists but selects no servers", async () => {
     const importFn = vi
       .fn<(cwd?: string) => Promise<MCPServerDefinition[]>>()
-      .mockResolvedValue([palamhealth]);
+      .mockResolvedValue([acme]);
     const generateFn = encodeGenerate(".cursor/mcp.json");
     const installFn = vi
       .fn<(files: GeneratedFile[], cwd?: string) => Promise<void>>()
@@ -673,7 +671,7 @@ describe("run() - sync command", () => {
       .mockResolvedValue(undefined);
     const zcodeImport = vi
       .fn<(cwd?: string) => Promise<MCPServerDefinition[]>>()
-      .mockResolvedValue([palamhealth, github]);
+      .mockResolvedValue([acme, github]);
     const cursorImport = vi
       .fn<(cwd?: string) => Promise<MCPServerDefinition[]>>()
       .mockResolvedValue([]);
@@ -694,9 +692,7 @@ describe("run() - sync command", () => {
     });
     mockRegistryDetectAll.mockResolvedValue([zcode, cursor]);
 
-    const cwdSpy = vi
-      .spyOn(process, "cwd")
-      .mockReturnValue("/home/blitz/Development/PremierStudio/web");
+    const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue("/workspace/Development/OtherOrg/web");
 
     try {
       await withConfig([github], async (configPath) => {
@@ -720,14 +716,11 @@ describe("run() - sync command", () => {
       { path: ".cursor/mcp.json", content: encodedMcpContent([github]), format: "json" },
     ];
     expect(zcodeInstall).toHaveBeenCalledTimes(1);
-    expect(zcodeInstall).toHaveBeenCalledWith(
-      expectedFiles,
-      "/home/blitz/Development/PremierStudio/web",
-    );
+    expect(zcodeInstall).toHaveBeenCalledWith(expectedFiles, "/workspace/Development/OtherOrg/web");
     expect(cursorInstall).toHaveBeenCalledTimes(1);
     expect(cursorInstall).toHaveBeenCalledWith(
       expectedCursorFiles,
-      "/home/blitz/Development/PremierStudio/web",
+      "/workspace/Development/OtherOrg/web",
     );
     expect(encodedMcpContent([github])).toBe(
       JSON.stringify({ mcpServers: { github: { command: "npx" } } }, null, 2),
@@ -798,7 +791,7 @@ describe("run() - sync command", () => {
     expect(installFn.mock.calls[0]![0]![0]!.path).not.toBe(`${homedir()}/.grok/mcp.json`);
   });
 
-  it("honors whenPathContains and keeps PalamHealth servers in PalamHealth cwd", async () => {
+  it("honors whenPathContains and keeps path-gated servers in matching cwd", async () => {
     const generateFn = encodeGenerate(".claude/mcp.json");
     const installFn = vi
       .fn<(files: GeneratedFile[], cwd?: string) => Promise<void>>()
@@ -810,39 +803,37 @@ describe("run() - sync command", () => {
       install: installFn,
     });
     mockRegistryDetectAll.mockResolvedValue([adapter]);
-    const cwdSpy = vi
-      .spyOn(process, "cwd")
-      .mockReturnValue("/home/blitz/Development/PalamHealth/PalamHealth");
+    const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue("/workspace/Development/AcmeCorp/app");
 
     try {
-      await withConfig([palamhealth, github], async (configPath) => {
+      await withConfig([acme, github], async (configPath) => {
         await run(["sync", `--config=${configPath}`, "--layer=project"]);
       });
     } finally {
       cwdSpy.mockRestore();
     }
 
-    expect(generateFn.mock.calls[0]![0]!.map((s) => s.id)).toEqual(["palamhealth", "github"]);
+    expect(generateFn.mock.calls[0]![0]!.map((s) => s.id)).toEqual(["acme", "github"]);
     expect(installFn).toHaveBeenCalledWith(
       [
         {
           path: ".claude/mcp.json",
-          content: encodedMcpContent([palamhealth, github]),
+          content: encodedMcpContent([acme, github]),
           format: "json",
         },
       ],
-      "/home/blitz/Development/PalamHealth/PalamHealth",
+      "/workspace/Development/AcmeCorp/app",
     );
   });
 
-  it("honors whenPathContains and refuses PalamHealth leak into PremierStudio cwd", async () => {
+  it("honors whenPathContains and refuses path-gated leak into non-matching cwd", async () => {
     const generateFn = encodeGenerate(".claude/mcp.json");
     const installFn = vi
       .fn<(files: GeneratedFile[], cwd?: string) => Promise<void>>()
       .mockResolvedValue(undefined);
     const importFn = vi
       .fn<(cwd?: string) => Promise<MCPServerDefinition[]>>()
-      .mockResolvedValue([palamhealth]);
+      .mockResolvedValue([acme]);
     const adapter = makeAdapter({
       id: "claude-code",
       name: "Claude Code",
@@ -851,12 +842,10 @@ describe("run() - sync command", () => {
       import: importFn,
     });
     mockRegistryDetectAll.mockResolvedValue([adapter]);
-    const cwdSpy = vi
-      .spyOn(process, "cwd")
-      .mockReturnValue("/home/blitz/Development/PremierStudio/web");
+    const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue("/workspace/Development/OtherOrg/web");
 
     try {
-      await withConfig([palamhealth], async (configPath) => {
+      await withConfig([acme], async (configPath) => {
         await expect(run(["sync", `--config=${configPath}`, "--layer=project"])).rejects.toThrow(
           "process.exit(1)",
         );
@@ -872,7 +861,7 @@ describe("run() - sync command", () => {
     expect(exitCode).toBe(1);
   });
 
-  it("installs un-gated project servers in PremierStudio while dropping path-gated PalamHealth", async () => {
+  it("installs un-gated project servers in other repos while dropping path-gated servers", async () => {
     const generateFn = encodeGenerate(".claude/mcp.json");
     const installFn = vi
       .fn<(files: GeneratedFile[], cwd?: string) => Promise<void>>()
@@ -884,12 +873,10 @@ describe("run() - sync command", () => {
       install: installFn,
     });
     mockRegistryDetectAll.mockResolvedValue([adapter]);
-    const cwdSpy = vi
-      .spyOn(process, "cwd")
-      .mockReturnValue("/home/blitz/Development/PremierStudio/web");
+    const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue("/workspace/Development/OtherOrg/web");
 
     try {
-      await withConfig([palamhealth, github], async (configPath) => {
+      await withConfig([acme, github], async (configPath) => {
         await run(["sync", `--config=${configPath}`]);
       });
     } finally {
@@ -899,10 +886,10 @@ describe("run() - sync command", () => {
     expect(generateFn.mock.calls[0]![0]!.map((s) => s.id)).toEqual(["github"]);
     expect(installFn).toHaveBeenCalledWith(
       [{ path: ".claude/mcp.json", content: encodedMcpContent([github]), format: "json" }],
-      "/home/blitz/Development/PremierStudio/web",
+      "/workspace/Development/OtherOrg/web",
     );
-    expect(encodedMcpContent([github])).not.toContain("palamhealth");
-    expect(encodedMcpContent([github])).not.toContain("op-run-palamhealth");
+    expect(encodedMcpContent([github])).not.toContain("acme");
+    expect(encodedMcpContent([github])).not.toContain("op-run-acme");
   });
 
   it("respects --dry-run from config and does not install or import", async () => {
@@ -912,7 +899,7 @@ describe("run() - sync command", () => {
       .mockResolvedValue(undefined);
     const importFn = vi
       .fn<(cwd?: string) => Promise<MCPServerDefinition[]>>()
-      .mockResolvedValue([palamhealth]);
+      .mockResolvedValue([acme]);
     const adapter = makeAdapter({
       id: "cursor",
       name: "Cursor",
@@ -1029,10 +1016,10 @@ describe("run() - audit command", () => {
     });
     mockRegistryGetAll.mockReturnValue([adapter]);
     await run(["audit"]);
-    expect(allLog()).toContain("No PalamHealth user-global MCP leaks found.");
+    expect(allLog()).toContain("No user-global MCP leaks found.");
   });
 
-  it("exits 1 when PalamHealth is in a user-global config", async () => {
+  it("exits 1 when a secret wrapper is in a user-global config", async () => {
     const adapter = makeAdapter({
       id: "zcode",
       name: "ZCode",
@@ -1042,14 +1029,14 @@ describe("run() - audit command", () => {
           name: "outline",
           transport: {
             type: "stdio",
-            command: "/home/blitz/.local/bin/op-run-palamhealth",
+            command: "/usr/local/bin/op-run-acme",
           },
         },
       ]),
     });
     mockRegistryGetAll.mockReturnValue([adapter]);
     await expect(run(["audit"])).rejects.toThrow("process.exit(1)");
-    expect(allLog()).toContain("interactive-palamhealth-account");
+    expect(allLog()).toContain("secret-wrapper-in-user-config");
     expect(exitCode).toBe(1);
   });
 });

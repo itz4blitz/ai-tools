@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { join, resolve } from "node:path";
 import { BaseRuleAdapter } from "./base.js";
 import type { RuleDefinition, GeneratedFile } from "../types/index.js";
 
@@ -77,13 +78,27 @@ describe("BaseRuleAdapter", () => {
     it("uses provided cwd to resolve configDir", async () => {
       mockedExistsSync.mockReturnValue(true);
       await adapter.detect("/custom/dir");
-      expect(mockedExistsSync).toHaveBeenCalledWith(expect.stringContaining("custom/dir"));
+      expect(mockedExistsSync).toHaveBeenCalledWith(expect.stringContaining(join("custom", "dir")));
     });
 
     it("uses process.cwd() when no cwd is provided", async () => {
       mockedExistsSync.mockReturnValue(false);
       await adapter.detect();
-      expect(mockedExistsSync).toHaveBeenCalledWith(expect.stringContaining(adapter.configDir));
+      expect(mockedExistsSync).toHaveBeenCalledWith(
+        expect.stringContaining(join(".test", "rules")),
+      );
+    });
+
+    it("falls back to commandExists via execFile when configDir is missing", async () => {
+      mockedExistsSync.mockReturnValue(false);
+      class NodeRuleAdapter extends TestRuleAdapter {
+        override readonly command = "node";
+      }
+      class MissingRuleAdapter extends TestRuleAdapter {
+        override readonly command = "definitely-not-a-real-binary-xyz-987654";
+      }
+      expect(await new NodeRuleAdapter().detect()).toBe(true);
+      expect(await new MissingRuleAdapter().detect()).toBe(false);
     });
   });
 
@@ -140,9 +155,12 @@ describe("BaseRuleAdapter", () => {
 
       await adapter.install(files);
 
-      expect(mockedMkdir).toHaveBeenCalledWith(expect.stringContaining("deep/nested/dir"), {
-        recursive: true,
-      });
+      expect(mockedMkdir).toHaveBeenCalledWith(
+        expect.stringContaining(join("deep", "nested", "dir")),
+        {
+          recursive: true,
+        },
+      );
     });
 
     it("handles empty file array", async () => {
@@ -160,7 +178,7 @@ describe("BaseRuleAdapter", () => {
       await adapter.install(files, "/custom/project");
 
       expect(mockedWriteFile).toHaveBeenCalledWith(
-        expect.stringContaining("/custom/project"),
+        expect.stringContaining(resolve("/custom/project")),
         "test",
         "utf-8",
       );
