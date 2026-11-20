@@ -14,7 +14,7 @@ const ADAPTER_SUPPORT: Record<string, Record<PluginEngine, boolean>> = {
   grok: { mcp: true, skills: true, rules: true, agents: true, hooks: true },
   zcode: { mcp: true, skills: true, rules: true, agents: true, hooks: true },
   "antigravity-cli": { mcp: false, skills: true, rules: true, agents: true, hooks: false },
-  windsurf: { mcp: true, skills: true, rules: true, agents: false, hooks: false },
+  windsurf: { mcp: true, skills: true, rules: true, agents: true, hooks: true },
   copilot: { mcp: true, skills: true, rules: true, agents: true, hooks: false },
   kiro: { mcp: true, skills: true, rules: true, agents: true, hooks: true },
   cline: { mcp: true, skills: true, rules: true, agents: true, hooks: true },

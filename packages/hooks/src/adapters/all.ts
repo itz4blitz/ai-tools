@@ -8,4 +8,5 @@ import "./gemini-cli.js";
 import "./grok.js";
 import "./kiro.js";
 import "./opencode.js";
+import "./windsurf.js";
 import "./zcode.js";

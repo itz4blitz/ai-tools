@@ -11,4 +11,5 @@ import "./opencode.js";
 import "./droid.js";
 import "./copilot.js";
 import "./roo-code.js";
+import "./windsurf.js";
 import "./zcode.js";
