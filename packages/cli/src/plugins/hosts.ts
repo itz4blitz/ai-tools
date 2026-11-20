@@ -140,10 +140,11 @@ export const KNOWN_PLUGIN_HOSTS: Record<string, PluginHostInfo> = {
     id: "amp",
     name: "Amp",
     kind: "cli",
-    nativeEngineSupport: { mcp: true, skills: true, rules: true, agents: false, hooks: false },
+    nativeEngineSupport: { mcp: true, skills: true, rules: true, agents: false, hooks: true },
     supportsInteractiveApps: false,
-    supportsNativeBundles: false,
-    notes: "Amp adapters cover MCP, skills, and rules. There is no agents or hooks adapter.",
+    supportsNativeBundles: true,
+    notes:
+      "Amp reads project .amp/settings.json and user ~/.config/amp/settings.json (amp.mcpServers), .agents/skills, AGENTS.md rules, and .amp/plugins TypeScript plugins. Agents are built-in.",
   },
   continue: {
     id: "continue",

@@ -207,4 +207,41 @@ describe("buildPluginInstallPlan", () => {
       "host-unsupported",
     );
   });
+
+  it("reports amp hooks as supported on the host and agents as host-unsupported", async () => {
+    const plan = await buildPluginInstallPlan(
+      {
+        id: "cert-coach",
+        name: "Certification Coach",
+        version: "0.1.0",
+        hooks: [
+          {
+            id: "audit",
+            name: "Audit",
+            events: ["tool:before"],
+            phase: "before",
+            handler: async () => {},
+          },
+        ],
+        agents: [
+          {
+            id: "reviewer",
+            name: "Reviewer",
+            instructions: "Review code.",
+          },
+        ],
+      },
+      {
+        tools: ["amp"],
+        force: true,
+        detectedToolsOverride: ["amp"],
+      },
+    );
+
+    expect(plan.targets[0]?.host.nativeEngineSupport.hooks).toBe(true);
+    expect(plan.targets[0]?.host.supportsNativeBundles).toBe(true);
+    expect(plan.targets[0]?.engines.find((item) => item.engine === "agents")?.status).toBe(
+      "host-unsupported",
+    );
+  });
 });
