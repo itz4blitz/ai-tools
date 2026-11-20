@@ -26,7 +26,7 @@ export const KNOWN_PLUGIN_HOSTS: Record<string, PluginHostInfo> = {
     supportsInteractiveApps: true,
     supportsNativeBundles: true,
     notes:
-      "Claude Desktop installs local MCP desktop extensions and can render interactive remote connectors, but it is not a general skills or hooks host.",
+      "Claude Desktop uses user-global stdio-only claude_desktop_config.json (no project layer) and can render interactive remote connectors; .mcpb desktop extension bundles are not yet emitted, and it is not a general skills or hooks host.",
   },
   codex: {
     id: "codex",
