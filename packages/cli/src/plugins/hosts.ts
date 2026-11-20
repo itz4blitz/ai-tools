@@ -15,8 +15,9 @@ export const KNOWN_PLUGIN_HOSTS: Record<string, PluginHostInfo> = {
     kind: "cli",
     nativeEngineSupport: { mcp: true, skills: true, rules: true, agents: true, hooks: true },
     supportsInteractiveApps: false,
-    supportsNativeBundles: false,
-    notes: "Claude Code exposes MCP plus project-level hooks, agents, commands, and rules.",
+    supportsNativeBundles: true,
+    notes:
+      "Claude Code exposes MCP plus project- and user-level hooks, skills, agents, rules, and native plugin bundles.",
   },
   "claude-desktop": {
     id: "claude-desktop",
