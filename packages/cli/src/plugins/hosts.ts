@@ -120,11 +120,12 @@ export const KNOWN_PLUGIN_HOSTS: Record<string, PluginHostInfo> = {
   cline: {
     id: "cline",
     name: "Cline",
-    kind: "desktop",
+    kind: "hybrid",
     nativeEngineSupport: { mcp: true, skills: true, rules: true, agents: true, hooks: true },
     supportsInteractiveApps: false,
     supportsNativeBundles: false,
-    notes: "Cline adapters cover hooks, MCP, agents, skills, and rules.",
+    notes:
+      "Cline runs as both a VS Code extension and CLI, using .clinerules/ (rules, hooks, workflows), .cline/skills/, and OS-specific cline_mcp_settings.json.",
   },
   droid: {
     id: "droid",

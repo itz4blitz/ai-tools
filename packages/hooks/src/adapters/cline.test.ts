@@ -1,41 +1,12 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import type { HookContext, HookDefinition, HookEventType } from "../index.js";
-
-// Track removeFile calls from instances
-const removeFileSpy = vi.fn();
-const commandExistsSpy = vi.fn<(cmd: string) => Promise<boolean>>().mockResolvedValue(false);
-
-// We need to mock the registry to prevent side effects during import
-vi.mock("./index.js", () => {
-  const registry = { register: vi.fn() };
-  abstract class BaseAdapter {
-    abstract readonly id: string;
-    abstract readonly name: string;
-    abstract readonly version: string;
-    abstract readonly capabilities: unknown;
-    abstract detect(): Promise<boolean>;
-    abstract generate(hooks: HookDefinition[]): Promise<unknown[]>;
-    abstract mapEvent(event: string): string[];
-    abstract mapNativeEvent(nativeEvent: string): string[];
-    async install() {}
-    async uninstall() {}
-    protected async commandExists(cmd: string) {
-      return commandExistsSpy(cmd);
-    }
-    protected async removeFile(path: string) {
-      removeFileSpy(path);
-    }
-  }
-  return { BaseAdapter, registry };
-});
-
-// Mock fs modules to avoid real filesystem access
-vi.mock("node:fs", () => ({
-  existsSync: vi.fn(() => false),
-}));
-
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { ClineAdapter } from "./cline.js";
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import type { HookContext, HookDefinition, HookEventType } from "../index.js";
+import { ClineAdapter, getClineGlobalStoragePath } from "./cline.js";
 
 function makeHandler() {
   return async (ctx: HookContext, next: () => Promise<void>) => {
@@ -46,6 +17,7 @@ function makeHandler() {
 
 describe("ClineAdapter", () => {
   let adapter: ClineAdapter;
+  let tempDir: string;
 
   const testHook: HookDefinition = {
     id: "test",
@@ -55,41 +27,30 @@ describe("ClineAdapter", () => {
     handler: makeHandler(),
   };
 
-  beforeEach(() => {
-    vi.clearAllMocks();
+  beforeEach(async () => {
     adapter = new ClineAdapter();
+    tempDir = await mkdtemp(join(tmpdir(), "ai-tools-cline-hooks-"));
+  });
+
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
   });
 
   // ── Metadata / Capabilities ────────────────────────────────
 
   describe("metadata", () => {
-    it("has correct id", () => {
+    it("has correct id, name, and version", () => {
       expect(adapter.id).toBe("cline");
-    });
-
-    it("has correct name", () => {
       expect(adapter.name).toBe("Cline");
-    });
-
-    it("has correct version", () => {
       expect(adapter.version).toBe("1.0");
     });
   });
 
   describe("capabilities", () => {
-    it("supports before hooks", () => {
+    it("supports beforeHooks, afterHooks, mcp, and configFile", () => {
       expect(adapter.capabilities.beforeHooks).toBe(true);
-    });
-
-    it("supports after hooks", () => {
       expect(adapter.capabilities.afterHooks).toBe(true);
-    });
-
-    it("supports MCP", () => {
       expect(adapter.capabilities.mcp).toBe(true);
-    });
-
-    it("supports config file generation", () => {
       expect(adapter.capabilities.configFile).toBe(true);
     });
 
@@ -112,8 +73,9 @@ describe("ClineAdapter", () => {
       expect(adapter.capabilities.supportedEvents).toEqual(expected);
     });
 
-    it("lists all blockable events", () => {
+    it("lists all blockable events including prompt:submit", () => {
       const expected: HookEventType[] = [
+        "prompt:submit",
         "tool:before",
         "file:read",
         "file:write",
@@ -123,105 +85,42 @@ describe("ClineAdapter", () => {
         "mcp:before",
       ];
       expect(adapter.capabilities.blockableEvents).toEqual(expected);
-    });
-
-    it("blockable events are a subset of supported events", () => {
       for (const event of adapter.capabilities.blockableEvents) {
         expect(adapter.capabilities.supportedEvents).toContain(event);
       }
     });
   });
 
-  // ── mapEvent ───────────────────────────────────────────────
+  // ── mapEvent / mapNativeEvent ──────────────────────────────
 
   describe("mapEvent", () => {
-    it("maps session:start to TaskStart", () => {
+    it("maps universal events to Cline native events", () => {
       expect(adapter.mapEvent("session:start")).toEqual(["TaskStart"]);
-    });
-
-    it("maps session:end to TaskCancel", () => {
       expect(adapter.mapEvent("session:end")).toEqual(["TaskCancel"]);
-    });
-
-    it("maps prompt:submit to UserPromptSubmit", () => {
       expect(adapter.mapEvent("prompt:submit")).toEqual(["UserPromptSubmit"]);
-    });
-
-    it("maps prompt:response to empty array (unsupported)", () => {
       expect(adapter.mapEvent("prompt:response")).toEqual([]);
-    });
-
-    it("maps tool:before to PreToolUse", () => {
       expect(adapter.mapEvent("tool:before")).toEqual(["PreToolUse"]);
-    });
-
-    it("maps tool:after to PostToolUse", () => {
       expect(adapter.mapEvent("tool:after")).toEqual(["PostToolUse"]);
-    });
-
-    it("maps file:read to PreToolUse", () => {
       expect(adapter.mapEvent("file:read")).toEqual(["PreToolUse"]);
-    });
-
-    it("maps file:write to PreToolUse", () => {
       expect(adapter.mapEvent("file:write")).toEqual(["PreToolUse"]);
-    });
-
-    it("maps file:edit to PreToolUse", () => {
       expect(adapter.mapEvent("file:edit")).toEqual(["PreToolUse"]);
-    });
-
-    it("maps file:delete to PreToolUse", () => {
       expect(adapter.mapEvent("file:delete")).toEqual(["PreToolUse"]);
-    });
-
-    it("maps shell:before to PreToolUse", () => {
       expect(adapter.mapEvent("shell:before")).toEqual(["PreToolUse"]);
-    });
-
-    it("maps shell:after to PostToolUse", () => {
       expect(adapter.mapEvent("shell:after")).toEqual(["PostToolUse"]);
-    });
-
-    it("maps mcp:before to PreToolUse", () => {
       expect(adapter.mapEvent("mcp:before")).toEqual(["PreToolUse"]);
-    });
-
-    it("maps mcp:after to PostToolUse", () => {
       expect(adapter.mapEvent("mcp:after")).toEqual(["PostToolUse"]);
-    });
-
-    it("maps notification to empty array (unsupported)", () => {
       expect(adapter.mapEvent("notification")).toEqual([]);
-    });
-
-    it("returns empty array for unknown event", () => {
       expect(adapter.mapEvent("unknown:event" as HookEventType)).toEqual([]);
     });
   });
 
-  // ── mapNativeEvent ─────────────────────────────────────────
-
   describe("mapNativeEvent", () => {
-    it("maps TaskStart to session:start", () => {
+    it("maps Cline native events back to universal events", () => {
       expect(adapter.mapNativeEvent("TaskStart")).toEqual(["session:start"]);
-    });
-
-    it("maps TaskResume to session:start", () => {
       expect(adapter.mapNativeEvent("TaskResume")).toEqual(["session:start"]);
-    });
-
-    it("maps TaskCancel to session:end", () => {
       expect(adapter.mapNativeEvent("TaskCancel")).toEqual(["session:end"]);
-    });
-
-    it("maps UserPromptSubmit to prompt:submit", () => {
       expect(adapter.mapNativeEvent("UserPromptSubmit")).toEqual(["prompt:submit"]);
-    });
-
-    it("maps PreToolUse to multiple universal events", () => {
-      const result = adapter.mapNativeEvent("PreToolUse");
-      expect(result).toEqual([
+      expect(adapter.mapNativeEvent("PreToolUse")).toEqual([
         "tool:before",
         "file:read",
         "file:write",
@@ -230,225 +129,293 @@ describe("ClineAdapter", () => {
         "shell:before",
         "mcp:before",
       ]);
-    });
-
-    it("maps PostToolUse to multiple universal events", () => {
-      const result = adapter.mapNativeEvent("PostToolUse");
-      expect(result).toEqual(["tool:after", "shell:after", "mcp:after"]);
-    });
-
-    it("maps PreCompact to empty array", () => {
+      expect(adapter.mapNativeEvent("PostToolUse")).toEqual([
+        "tool:after",
+        "shell:after",
+        "mcp:after",
+      ]);
       expect(adapter.mapNativeEvent("PreCompact")).toEqual([]);
-    });
-
-    it("returns empty array for unknown native event", () => {
       expect(adapter.mapNativeEvent("UnknownNativeEvent")).toEqual([]);
-    });
-
-    it("returns empty array for empty string", () => {
-      expect(adapter.mapNativeEvent("")).toEqual([]);
     });
   });
 
   // ── generate ───────────────────────────────────────────────
 
   describe("generate", () => {
-    it("generates one hook script for shell:before (maps to PreToolUse)", async () => {
-      const configs = await adapter.generate([testHook]);
-      expect(configs).toHaveLength(1);
-      expect(configs[0]!.path).toBe(".clinerules/hooks/PreToolUse");
-    });
-
-    it("hook script has js format", async () => {
-      const configs = await adapter.generate([testHook]);
-      expect(configs[0]!.format).toBe("js");
-    });
-
-    it("hook script contains shebang", async () => {
-      const configs = await adapter.generate([testHook]);
-      expect(configs[0]!.content).toContain("#!/usr/bin/env node");
-    });
-
-    it("hook script imports from ai-hooks", async () => {
-      const configs = await adapter.generate([testHook]);
-      expect(configs[0]!.content).toContain(
-        'import { loadConfig, HookEngine } from "@itz4blitz/ai-tools-hooks"',
-      );
-    });
-
-    it("hook script reads STDIN for input", async () => {
-      const configs = await adapter.generate([testHook]);
-      expect(configs[0]!.content).toContain("readStdin");
-      expect(configs[0]!.content).toContain("process.stdin");
-    });
-
-    it("hook script handles blocking with cancel: true JSON output", async () => {
-      const configs = await adapter.generate([testHook]);
-      expect(configs[0]!.content).toContain("cancel: true");
-      expect(configs[0]!.content).toContain("errorMessage");
-    });
-
-    it("hook script outputs cancel: false on success", async () => {
-      const configs = await adapter.generate([testHook]);
-      expect(configs[0]!.content).toContain("cancel: false");
-    });
-
-    it("hook script contains DO NOT EDIT warning", async () => {
-      const configs = await adapter.generate([testHook]);
-      expect(configs[0]!.content).toContain("DO NOT EDIT");
-    });
-
-    it("hook script embeds PROJECT_ROOT for worktree safety", async () => {
-      const configs = await adapter.generate([testHook]);
-      expect(configs[0]!.content).toContain("const PROJECT_ROOT =");
-      expect(configs[0]!.content).toContain("process.chdir(PROJECT_ROOT)");
-    });
-
-    it("hook script handles Cline tool names (write_to_file, replace_in_file, etc.)", async () => {
-      const configs = await adapter.generate([testHook]);
-      const content = configs[0]!.content;
-      expect(content).toContain('"write_to_file"');
-      expect(content).toContain('"replace_in_file"');
-      expect(content).toContain('"read_file"');
-      expect(content).toContain('"execute_command"');
-      expect(content).toContain('"use_mcp_tool"');
-    });
-
-    it("maps multiple hook events to correct native scripts", async () => {
-      const multiHook: HookDefinition = {
-        id: "multi",
-        name: "Multi Hook",
-        events: ["session:start", "tool:after", "prompt:submit"],
-        phase: "after",
-        handler: makeHandler(),
-      };
-      const configs = await adapter.generate([multiHook]);
-      const paths = configs.map((c) => c.path);
-      expect(paths).toContain(".clinerules/hooks/TaskStart");
-      expect(paths).toContain(".clinerules/hooks/PostToolUse");
-      expect(paths).toContain(".clinerules/hooks/UserPromptSubmit");
-    });
-
-    it("deduplicates native events from multiple hooks mapping to same native event", async () => {
+    it("generates deduplicated hook scripts with JSON-escaped PROJECT_ROOT", async () => {
       const hooks: HookDefinition[] = [
+        testHook,
         {
-          id: "hook1",
-          name: "Hook 1",
-          events: ["tool:before"],
-          phase: "before",
-          handler: makeHandler(),
-        },
-        {
-          id: "hook2",
-          name: "Hook 2",
-          events: ["file:write"],
+          id: "file-guard",
+          name: "File Guard",
+          events: ["file:write", "mcp:after", "prompt:submit"],
           phase: "before",
           handler: makeHandler(),
         },
       ];
       const configs = await adapter.generate(hooks);
-      // Both map to PreToolUse, should only have one script
-      const preToolUseScripts = configs.filter((c) => c.path.includes("PreToolUse"));
-      expect(preToolUseScripts).toHaveLength(1);
-    });
-
-    it("returns empty config for hooks with no native event mappings", async () => {
-      const unmappedHook: HookDefinition = {
-        id: "unmapped",
-        name: "Unmapped Hook",
-        events: ["prompt:response"],
-        phase: "after",
-        handler: makeHandler(),
-      };
-      const configs = await adapter.generate([unmappedHook]);
-      expect(configs).toHaveLength(0);
-    });
-
-    it("generates config for empty hooks array", async () => {
-      const configs = await adapter.generate([]);
-      expect(configs).toHaveLength(0);
-    });
-
-    it("generates separate scripts for different native events", async () => {
-      const hooks: HookDefinition[] = [
-        {
-          id: "hook1",
-          name: "Hook 1",
-          events: ["shell:before"],
-          phase: "before",
-          handler: makeHandler(),
-        },
-        {
-          id: "hook2",
-          name: "Hook 2",
-          events: ["session:start"],
-          phase: "before",
-          handler: makeHandler(),
-        },
-      ];
-      const configs = await adapter.generate(hooks);
-      expect(configs).toHaveLength(2);
       const paths = configs.map((c) => c.path);
       expect(paths).toContain(".clinerules/hooks/PreToolUse");
-      expect(paths).toContain(".clinerules/hooks/TaskStart");
+      expect(paths).toContain(".clinerules/hooks/PostToolUse");
+      expect(paths).toContain(".clinerules/hooks/UserPromptSubmit");
+      expect(paths.filter((p) => p.endsWith("PreToolUse"))).toHaveLength(1);
+
+      const pre = configs.find((c) => c.path.endsWith("PreToolUse"))!;
+      expect(pre.format).toBe("js");
+      expect(pre.content).toContain("#!/usr/bin/env node");
+      expect(pre.content).toContain(`const PROJECT_ROOT = ${JSON.stringify(process.cwd())};`);
+      expect(pre.content).toContain("input.preToolUse");
+      expect(pre.content).toContain("input.postToolUse");
+      expect(pre.content).toContain("input.userPromptSubmit");
+      expect(pre.content).toContain("contextModification");
+      expect(pre.content).toContain('"mcp:after"');
     });
 
-    it("script for PreToolUse contains the event name", async () => {
+    it("returns empty array for empty or unmapped hooks", async () => {
+      expect(await adapter.generate([])).toEqual([]);
+      expect(
+        await adapter.generate([
+          {
+            id: "unmapped",
+            name: "Unmapped",
+            events: ["prompt:response"],
+            phase: "after",
+            handler: makeHandler(),
+          },
+        ]),
+      ).toEqual([]);
+    });
+  });
+
+  // ── real temp-dir install / uninstall / detect ─────────────
+
+  describe("install, uninstall, and detect", () => {
+    it("installs scripts in temp dir (with .ps1 wrapper on win32 or 0755 on POSIX) and uninstalls cleanly", async () => {
       const configs = await adapter.generate([testHook]);
-      const script = configs.find((c) => c.path.includes("PreToolUse"));
-      expect(script!.content).toContain("PreToolUse");
+      await adapter.install(configs, tempDir);
+
+      const hookPath = join(tempDir, ".clinerules", "hooks", "PreToolUse");
+      expect(existsSync(hookPath)).toBe(true);
+
+      if (process.platform === "win32") {
+        const ps1Path = `${hookPath}.ps1`;
+        expect(existsSync(ps1Path)).toBe(true);
+        const ps1Content = await readFile(ps1Path, "utf-8");
+        expect(ps1Content).toContain("PreToolUse");
+        expect(ps1Content).toContain("& node");
+      } else {
+        const fileStat = await stat(hookPath);
+        expect(fileStat.mode & 0o111).not.toBe(0);
+      }
+
+      await adapter.uninstall(tempDir);
+      expect(existsSync(hookPath)).toBe(false);
+      expect(existsSync(`${hookPath}.ps1`)).toBe(false);
+    });
+
+    it("detects .clinerules in provided cwd", async () => {
+      await mkdir(join(tempDir, ".clinerules"), { recursive: true });
+      expect(await adapter.detect(tempDir)).toBe(true);
+    });
+
+    it("resolves VS Code globalStorage path across macOS, Windows, and Linux", () => {
+      expect(
+        getClineGlobalStoragePath({ platform: "darwin", home: "/Users/dev", env: {} }),
+      ).toContain("Library");
+      expect(
+        getClineGlobalStoragePath({
+          platform: "win32",
+          home: "C:\\Users\\dev",
+          env: { APPDATA: "C:\\Users\\dev\\AppData\\Roaming" },
+        }),
+      ).toContain("saoudrizwan.claude-dev");
+      expect(
+        getClineGlobalStoragePath({
+          platform: "linux",
+          home: "/home/dev",
+          env: { XDG_CONFIG_HOME: "/home/dev/.xdg" },
+        }),
+      ).toContain(".xdg");
     });
   });
 
-  // ── detect ──────────────────────────────────────────────────
+  // ── execute generated hook script against Cline v3.36+ STDIN JSON ──
 
-  describe("detect", () => {
-    it("returns false when neither command nor directory exists", async () => {
-      commandExistsSpy.mockResolvedValue(false);
-      vi.mocked(existsSync).mockReturnValue(false);
-      const result = await adapter.detect();
-      expect(result).toBe(false);
+  describe("generated runner execution", () => {
+    async function runGeneratedScript(
+      eventName: string,
+      stdinPayload: Record<string, unknown>,
+      mockResults: Array<Record<string, unknown>>,
+    ): Promise<{ stdout: Record<string, unknown>; capturedEvent: Record<string, unknown> }> {
+      const hookForEvent: HookDefinition = {
+        id: "exec-test",
+        name: "Exec Test",
+        events: [
+          "session:start",
+          "prompt:submit",
+          "shell:before",
+          "shell:after",
+          "mcp:before",
+          "mcp:after",
+        ],
+        phase: "before",
+        handler: makeHandler(),
+      };
+      const configs = await adapter.generate([hookForEvent]);
+      const config = configs.find((c) => c.path === `.clinerules/hooks/${eventName}`);
+      expect(config).toBeDefined();
+
+      const eventCapturePath = join(tempDir, "captured-event.json");
+      const mockPkgPath = join(tempDir, "mock-hooks.mjs");
+      await writeFile(
+        mockPkgPath,
+        [
+          'import { writeFileSync } from "node:fs";',
+          "export async function loadConfig() { return { hooks: [] }; }",
+          "export class HookEngine {",
+          "  async emit(event) {",
+          `    writeFileSync(${JSON.stringify(eventCapturePath)}, JSON.stringify(event), "utf-8");`,
+          `    return ${JSON.stringify(mockResults)};`,
+          "  }",
+          "}",
+        ].join("\n"),
+        "utf-8",
+      );
+
+      const runnerPath = join(tempDir, `${eventName}.mjs`);
+      const patchedContent = config!.content
+        .replace('"@itz4blitz/ai-tools-hooks"', JSON.stringify(pathToFileURL(mockPkgPath).href))
+        .replace(
+          `const PROJECT_ROOT = ${JSON.stringify(process.cwd())};`,
+          `const PROJECT_ROOT = ${JSON.stringify(tempDir)};`,
+        );
+      await writeFile(runnerPath, patchedContent, "utf-8");
+
+      const rawStdout = execFileSync(process.execPath, [runnerPath], {
+        input: JSON.stringify(stdinPayload),
+        encoding: "utf-8",
+      });
+
+      const capturedEvent = JSON.parse(await readFile(eventCapturePath, "utf-8")) as Record<
+        string,
+        unknown
+      >;
+      return {
+        stdout: JSON.parse(rawStdout) as Record<string, unknown>,
+        capturedEvent,
+      };
+    }
+
+    it("parses Cline v3.36+ preToolUse and blocks with errorMessage + contextModification", async () => {
+      const { stdout, capturedEvent } = await runGeneratedScript(
+        "PreToolUse",
+        {
+          hookName: "PreToolUse",
+          taskId: "task-123",
+          preToolUse: {
+            toolName: "execute_command",
+            parameters: { command: "rm -rf /tmp/danger" },
+          },
+        },
+        [
+          {
+            blocked: true,
+            reason: "Dangerous shell command",
+            data: { additionalContext: "Use safe cleanup instead" },
+          },
+        ],
+      );
+
+      expect(capturedEvent.type).toBe("shell:before");
+      expect(capturedEvent.command).toBe("rm -rf /tmp/danger");
+      expect(stdout).toEqual({
+        cancel: true,
+        errorMessage: "Dangerous shell command",
+        contextModification: "Use safe cleanup instead",
+      });
     });
 
-    it("returns true when cline command exists", async () => {
-      commandExistsSpy.mockResolvedValue(true);
-      vi.mocked(existsSync).mockReturnValue(false);
-      const result = await adapter.detect();
-      expect(result).toBe(true);
+    it("parses Cline v3.36+ postToolUse for use_mcp_tool into mcp:after", async () => {
+      const { stdout, capturedEvent } = await runGeneratedScript(
+        "PostToolUse",
+        {
+          hookName: "PostToolUse",
+          taskId: "task-456",
+          postToolUse: {
+            toolName: "use_mcp_tool",
+            parameters: {
+              server_name: "github",
+              tool_name: "create_issue",
+              arguments: JSON.stringify({ title: "Bug" }),
+            },
+            result: { issueNumber: 42 },
+            success: true,
+            executionTimeMs: 185,
+          },
+        },
+        [{ blocked: false, data: { additionalContext: "MCP audit logged" } }],
+      );
+
+      expect(capturedEvent.type).toBe("mcp:after");
+      expect(capturedEvent.server).toBe("github");
+      expect(capturedEvent.method).toBe("create_issue");
+      expect(capturedEvent.params).toEqual({ title: "Bug" });
+      expect(capturedEvent.result).toEqual({ issueNumber: 42 });
+      expect(capturedEvent.duration).toBe(185);
+      expect(stdout).toEqual({
+        cancel: false,
+        contextModification: "MCP audit logged",
+      });
     });
 
-    it("returns true when .clinerules directory exists", async () => {
-      commandExistsSpy.mockResolvedValue(false);
-      vi.mocked(existsSync).mockReturnValue(true);
-      const result = await adapter.detect();
-      expect(result).toBe(true);
+    it("parses Cline v3.36+ userPromptSubmit.prompt and forwards contextModification", async () => {
+      const { stdout, capturedEvent } = await runGeneratedScript(
+        "UserPromptSubmit",
+        {
+          hookName: "UserPromptSubmit",
+          taskId: "task-789",
+          userPromptSubmit: { prompt: "Refactor auth module" },
+        },
+        [{ blocked: false, data: { additionalContext: "Remember security guidelines" } }],
+      );
+
+      expect(capturedEvent.type).toBe("prompt:submit");
+      expect(capturedEvent.prompt).toBe("Refactor auth module");
+      expect(stdout).toEqual({
+        cancel: false,
+        contextModification: "Remember security guidelines",
+      });
     });
 
-    it("returns true when both command and directory exist", async () => {
-      commandExistsSpy.mockResolvedValue(true);
-      vi.mocked(existsSync).mockReturnValue(true);
-      const result = await adapter.detect();
-      expect(result).toBe(true);
-    });
-  });
+    it("parses Cline v3.36+ taskStart and preserves backwards-compatible pendingToolInfo fallback", async () => {
+      const taskRes = await runGeneratedScript(
+        "TaskStart",
+        {
+          hookName: "TaskStart",
+          taskId: "task-start-1",
+          workspaceRoots: ["/workspace/app"],
+          taskStart: { taskMetadata: { task: "Build feature" } },
+        },
+        [{ blocked: false }],
+      );
+      expect(taskRes.capturedEvent.type).toBe("session:start");
+      expect(taskRes.capturedEvent.workingDirectory).toBe("/workspace/app");
+      expect((taskRes.capturedEvent.metadata as Record<string, unknown>).taskStart).toEqual({
+        taskMetadata: { task: "Build feature" },
+      });
 
-  // ── uninstall ───────────────────────────────────────────────
-
-  describe("uninstall", () => {
-    it("removes all hook scripts", async () => {
-      await adapter.uninstall();
-      expect(removeFileSpy).toHaveBeenCalledWith(".clinerules/hooks/PreToolUse");
-      expect(removeFileSpy).toHaveBeenCalledWith(".clinerules/hooks/PostToolUse");
-      expect(removeFileSpy).toHaveBeenCalledWith(".clinerules/hooks/UserPromptSubmit");
-      expect(removeFileSpy).toHaveBeenCalledWith(".clinerules/hooks/TaskStart");
-      expect(removeFileSpy).toHaveBeenCalledWith(".clinerules/hooks/TaskResume");
-      expect(removeFileSpy).toHaveBeenCalledWith(".clinerules/hooks/TaskCancel");
-      expect(removeFileSpy).toHaveBeenCalledWith(".clinerules/hooks/PreCompact");
-    });
-
-    it("calls removeFile for all 7 hook types", async () => {
-      await adapter.uninstall();
-      expect(removeFileSpy).toHaveBeenCalledTimes(7);
+      const legacyRes = await runGeneratedScript(
+        "PreToolUse",
+        {
+          hookName: "PreToolUse",
+          taskId: "legacy-1",
+          pendingToolInfo: { toolName: "read_file", path: "README.md" },
+        },
+        [{ blocked: false }],
+      );
+      expect(legacyRes.capturedEvent.type).toBe("file:read");
+      expect(legacyRes.capturedEvent.path).toBe("README.md");
+      expect(legacyRes.stdout).toEqual({ cancel: false });
     });
   });
 });

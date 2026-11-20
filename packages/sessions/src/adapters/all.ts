@@ -5,3 +5,4 @@ import "./gemini.js";
 import "./opencode.js";
 import "./droid.js";
 import "./cursor.js";
+import "./cline.js";
