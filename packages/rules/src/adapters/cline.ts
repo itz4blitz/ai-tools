@@ -30,6 +30,7 @@ export class ClineRuleAdapter extends BaseRuleAdapter {
   }
 
   override async install(files: GeneratedFile[], cwd?: string): Promise<void> {
+    if (files.length === 0) return;
     const dir = cwd ?? process.cwd();
     const rulesRoot = resolve(dir, this.configDir);
 
@@ -149,11 +150,25 @@ function parseRule(id: string, raw: string): RuleDefinition {
       if (/^paths\s*:/.test(trimmed)) {
         const rest = trimmed.slice(trimmed.indexOf(":") + 1).trim();
         if (rest.startsWith("[") && rest.endsWith("]")) {
-          const inner = rest.slice(1, -1).trim();
-          if (inner) {
-            for (const item of inner.split(",")) {
-              const cleaned = unquote(item);
-              if (cleaned) paths.push(cleaned);
+          let parsedJson: unknown;
+          try {
+            parsedJson = JSON.parse(rest);
+          } catch {
+            parsedJson = undefined;
+          }
+          if (Array.isArray(parsedJson)) {
+            for (const item of parsedJson) {
+              if (typeof item === "string" && item.trim()) {
+                paths.push(item.trim());
+              }
+            }
+          } else {
+            const inner = rest.slice(1, -1).trim();
+            if (inner) {
+              for (const item of inner.split(",")) {
+                const cleaned = unquote(item);
+                if (cleaned) paths.push(cleaned);
+              }
             }
           }
           inPaths = false;

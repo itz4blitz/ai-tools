@@ -99,11 +99,11 @@ export function getClineGlobalStoragePath(options: ResolveClineGlobalStorageOpti
   }
 
   if (platform === "win32") {
-    const appData = env.APPDATA ?? join(home, "AppData", "Roaming");
+    const appData = env.APPDATA || join(home, "AppData", "Roaming");
     return join(appData, "Code", "User", "globalStorage", "saoudrizwan.claude-dev");
   }
 
-  const xdgConfig = env.XDG_CONFIG_HOME ?? join(home, ".config");
+  const xdgConfig = env.XDG_CONFIG_HOME || join(home, ".config");
   return join(xdgConfig, "Code", "User", "globalStorage", "saoudrizwan.claude-dev");
 }
 
@@ -288,7 +288,7 @@ function parseMcpParams(raw) {
 
 async function run() {
   const raw = await readStdin();
-  const input = JSON.parse(raw || "{}");
+  const input = JSON.parse(raw.trim() || "{}");
   const hookName = input.hookName ?? ${JSON.stringify(eventName)};
 
   const preTool = input.preToolUse ?? {};

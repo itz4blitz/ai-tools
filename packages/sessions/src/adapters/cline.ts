@@ -66,10 +66,10 @@ export function getClineSessionStoragePaths(
       "saoudrizwan.claude-dev",
     );
   } else if (platform === "win32") {
-    const appData = env.APPDATA ?? join(home, "AppData", "Roaming");
+    const appData = env.APPDATA || join(home, "AppData", "Roaming");
     vscodeRoot = join(appData, "Code", "User", "globalStorage", "saoudrizwan.claude-dev");
   } else {
-    const xdgConfig = env.XDG_CONFIG_HOME ?? join(home, ".config");
+    const xdgConfig = env.XDG_CONFIG_HOME || join(home, ".config");
     vscodeRoot = join(xdgConfig, "Code", "User", "globalStorage", "saoudrizwan.claude-dev");
   }
 
@@ -201,12 +201,21 @@ class ClineSessionAdapter extends BaseSessionAdapter {
     if (messages.length === 0) return null;
 
     const dirStat = await stat(taskDir);
-    const uiTimestamps = uiMessages
-      .map((m) => m.ts)
-      .filter((ts): ts is number => typeof ts === "number" && Number.isFinite(ts));
+    let minUiTs: number | undefined;
+    let maxUiTs: number | undefined;
+    for (const msg of uiMessages) {
+      if (typeof msg.ts === "number" && Number.isFinite(msg.ts)) {
+        if (minUiTs === undefined || msg.ts < minUiTs) minUiTs = msg.ts;
+        if (maxUiTs === undefined || msg.ts > maxUiTs) maxUiTs = msg.ts;
+      }
+    }
 
-    const firstTs = uiTimestamps.length > 0 ? Math.min(...uiTimestamps) : historyItem?.ts;
-    const lastTs = uiTimestamps.length > 0 ? Math.max(...uiTimestamps) : historyItem?.ts;
+    const historyTs =
+      typeof historyItem?.ts === "number" && Number.isFinite(historyItem.ts)
+        ? historyItem.ts
+        : undefined;
+    const firstTs = minUiTs ?? historyTs;
+    const lastTs = maxUiTs ?? historyTs;
 
     const startedAt =
       firstTs !== undefined ? new Date(firstTs).toISOString() : dirStat.birthtime.toISOString();
@@ -248,13 +257,21 @@ class ClineSessionAdapter extends BaseSessionAdapter {
 
       if (!Array.isArray(entry.content)) continue;
 
-      const textParts: string[] = [];
+      let textParts: string[] = [];
+      const flushText = () => {
+        if (textParts.length > 0) {
+          messages.push({ role, content: textParts.join("\n") });
+          textParts = [];
+        }
+      };
+
       for (const block of entry.content) {
         if (!block || typeof block !== "object") continue;
 
         if (block.type === "text" && typeof block.text === "string" && block.text.trim()) {
           textParts.push(block.text.trim());
         } else if (block.type === "tool_use" && typeof block.name === "string") {
+          flushText();
           messages.push({
             role: "tool",
             toolName: block.name,
@@ -262,6 +279,7 @@ class ClineSessionAdapter extends BaseSessionAdapter {
               block.input !== undefined ? JSON.stringify(block.input) : `Called ${block.name}`,
           });
         } else if (block.type === "tool_result") {
+          flushText();
           const resultText = this.extractToolResultText(block.content);
           if (resultText) {
             messages.push({ role: "tool", content: resultText });
@@ -269,9 +287,7 @@ class ClineSessionAdapter extends BaseSessionAdapter {
         }
       }
 
-      if (textParts.length > 0) {
-        messages.push({ role, content: textParts.join("\n") });
-      }
+      flushText();
     }
 
     return messages;

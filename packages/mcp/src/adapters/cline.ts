@@ -31,10 +31,10 @@ function getVscodeGlobalStorageRoot(
     );
   }
   if (platform === "win32") {
-    const appData = env.APPDATA ?? join(home, "AppData", "Roaming");
+    const appData = env.APPDATA || join(home, "AppData", "Roaming");
     return join(appData, "Code", "User", "globalStorage", "saoudrizwan.claude-dev");
   }
-  const xdgConfig = env.XDG_CONFIG_HOME ?? join(home, ".config");
+  const xdgConfig = env.XDG_CONFIG_HOME || join(home, ".config");
   return join(xdgConfig, "Code", "User", "globalStorage", "saoudrizwan.claude-dev");
 }
 
@@ -164,6 +164,7 @@ class ClineMCPAdapter extends BaseMCPAdapter {
     const data = JSON.parse(raw) as { mcpServers?: Record<string, Record<string, unknown>> };
     const servers: MCPServerDefinition[] = [];
     for (const [id, config] of Object.entries(data.mcpServers ?? {})) {
+      if (!config || typeof config !== "object") continue;
       const enabled = typeof config.disabled === "boolean" ? !config.disabled : undefined;
       const base = { id, name: id, ...(enabled !== undefined ? { enabled } : {}) };
 
