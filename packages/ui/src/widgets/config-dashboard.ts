@@ -34,7 +34,7 @@ export type ConfigDashboardData = {
  */
 const ENGINES: Record<string, { configFiles: string[] }> = {
   hooks: { configFiles: ["ai-hooks.config.ts", "ai-hooks.config.js"] },
-  mcp: { configFiles: ["ai-mcp.config.ts", "ai-mcp.config.js"] },
+  mcp: { configFiles: ["mcp.config.ts", "mcp.config.js", "ai-mcp.config.ts", "ai-mcp.config.js"] },
   skills: { configFiles: ["ai-skills.config.ts", "ai-skills.config.js"] },
   agents: { configFiles: ["ai-agents.config.ts", "ai-agents.config.js"] },
   rules: { configFiles: ["ai-rules.config.ts", "ai-rules.config.js"] },
@@ -203,6 +203,8 @@ export async function getConfigDashboardData(mode: string): Promise<ConfigDashbo
   } else if (manifestHealth.staleCount > 0 || manifestHealth.missingCount > 0) {
     configHealth = "stale";
   } else if (manifestHealth.entryCount > 0 || engines.some((e) => e.configured)) {
+    configHealth = "healthy";
+  } else if (mode === "direct") {
     configHealth = "healthy";
   } else {
     configHealth = "error";

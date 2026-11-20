@@ -46,7 +46,12 @@ export function fromMcpServersMap(mcpServers: McpServersMap): MCPServerDefinitio
       if (isStringRecord(config.env)) transport.env = config.env;
       servers.push({ id, name: id, transport });
     } else if (typeof config.url === "string") {
-      const type = config.type === "http" ? "http" : "sse";
+      const type =
+        config.type === "http" ||
+        config.type === "streamable-http" ||
+        config.type === "streamableHttp"
+          ? "http"
+          : "sse";
       const transport: Extract<MCPTransport, { url: string }> = { type, url: config.url };
       if (isStringRecord(config.headers)) transport.headers = config.headers;
       servers.push({ id, name: id, transport });

@@ -51,6 +51,26 @@ describe("SessionAdapterRegistry", () => {
       registry.register(second);
       expect(registry.get("dupe")).toBe(second);
     });
+
+    it("resolves canonical ID aliases bidirectionally (claude <-> claude-code, gemini <-> gemini-cli)", () => {
+      const claude = makeFakeAdapter("claude");
+      const gemini = makeFakeAdapter("gemini");
+      registry.register(claude);
+      registry.register(gemini);
+
+      expect(registry.get("claude-code")).toBe(claude);
+      expect(registry.get("gemini-cli")).toBe(gemini);
+
+      registry.clear();
+
+      const claudeCode = makeFakeAdapter("claude-code");
+      const geminiCli = makeFakeAdapter("gemini-cli");
+      registry.register(claudeCode);
+      registry.register(geminiCli);
+
+      expect(registry.get("claude")).toBe(claudeCode);
+      expect(registry.get("gemini")).toBe(geminiCli);
+    });
   });
 
   describe("list", () => {

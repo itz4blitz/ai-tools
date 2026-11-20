@@ -14,6 +14,9 @@ export abstract class BaseMCPAdapter {
   /** Whether this adapter can use symlinks ("symlink") or needs file transformation ("transform"). */
   readonly installStrategy: "symlink" | "transform" = "transform";
 
+  /** Whether this host supports both project and user configs or user-global config only. */
+  readonly scope: "both" | "user-only" = "both";
+
   /** CLI binary name for detection (e.g., "claude", "cursor"). Override in subclass. */
   readonly command?: string;
 

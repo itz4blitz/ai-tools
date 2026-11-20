@@ -13,16 +13,16 @@ const stdio: MCPServerDefinition = {
   name: "context7",
   transport: {
     type: "stdio",
-    command: "/home/blitz/.local/bin/op-mcp-run-grok",
+    command: "/usr/local/bin/mcp-runner",
     args: ["npx", "-y", "@upstash/context7-mcp"],
-    env: { CONTEXT7_API_KEY: "op://mcp-secrets/Context7 API Key/password" },
+    env: { CONTEXT7_API_KEY: "secret-token-value" },
   },
 };
 
 const spaced: MCPServerDefinition = {
-  id: "GWS - Premier Studio",
-  name: "GWS - Premier Studio",
-  transport: { type: "stdio", command: "/home/blitz/.local/bin/gws-mcp-premier-studio" },
+  id: "Acme - Workspace Tools",
+  name: "Acme - Workspace Tools",
+  transport: { type: "stdio", command: "/usr/local/bin/acme-workspace-mcp" },
 };
 
 const remote: MCPServerDefinition = {
@@ -37,11 +37,15 @@ const remote: MCPServerDefinition = {
 
 describe("tomlKey", () => {
   it("leaves bare keys unquoted", () => {
-    expect(tomlKey("palamhealth")).toBe("palamhealth");
+    expect(tomlKey("acme_tools")).toBe("acme_tools");
   });
 
   it("quotes names with spaces", () => {
-    expect(tomlKey("GWS - Premier Studio")).toBe('"GWS - Premier Studio"');
+    expect(tomlKey("Acme - Workspace Tools")).toBe('"Acme - Workspace Tools"');
+  });
+
+  it("escapes quotes, backslashes, and control characters in keys", () => {
+    expect(tomlKey('a "b"\\c')).toBe('"a \\"b\\"\\\\c"');
   });
 });
 
@@ -50,7 +54,7 @@ describe("encodeMcpToml / parseMcpToml", () => {
     const encoded = encodeMcpToml([stdio]);
     expect(encoded).toContain("[mcp_servers.context7]");
     expect(encoded).toContain("[mcp_servers.context7.env]");
-    expect(encoded).toContain('command = "/home/blitz/.local/bin/op-mcp-run-grok"');
+    expect(encoded).toContain('command = "/usr/local/bin/mcp-runner"');
     expect(parseMcpToml(encoded)).toEqual([
       {
         id: "context7",
@@ -63,8 +67,76 @@ describe("encodeMcpToml / parseMcpToml", () => {
 
   it("round-trips quoted table names", () => {
     const encoded = encodeMcpToml([spaced]);
-    expect(encoded).toContain('[mcp_servers."GWS - Premier Studio"]');
-    expect(parseMcpToml(encoded)[0]?.id).toBe("GWS - Premier Studio");
+    expect(encoded).toContain('[mcp_servers."Acme - Workspace Tools"]');
+    expect(parseMcpToml(encoded)[0]?.id).toBe("Acme - Workspace Tools");
+  });
+
+  it("round-trips escaped quotes, backslashes, and newlines/tabs/CR", () => {
+    const tricky: MCPServerDefinition = {
+      id: 'server "alpha"\\1',
+      name: 'server "alpha"\\1',
+      transport: {
+        type: "stdio",
+        command: "C:\\tools\\bin\\",
+        args: ['say "hi"', "line1\nline2\r\tindented", "a,b,c"],
+        env: { NOTE: 'val\\"\n\t' },
+      },
+    };
+    const encoded = encodeMcpToml([tricky]);
+    expect(encoded).toContain("\\n");
+    expect(encoded).toContain("\\r");
+    expect(encoded).toContain("\\t");
+    expect(parseMcpToml(encoded)).toEqual([tricky]);
+  });
+
+  it("parses quoted commas inside args arrays", () => {
+    const parsed = parseMcpToml(`[mcp_servers.csv]
+command = "node"
+args = ["--cols", "a,b,c", "x, y"]
+`);
+    expect(parsed[0]?.transport).toEqual({
+      type: "stdio",
+      command: "node",
+      args: ["--cols", "a,b,c", "x, y"],
+    });
+  });
+
+  it("parses multiline arrays with trailing commas and inline comments", () => {
+    const parsed = parseMcpToml(`[mcp_servers.multi] # server comment
+command = "npx" # binary
+args = [
+  "-y", # auto confirm
+  "@org/pkg,v2",
+  'C:\\tools\\run.exe', # literal windows path
+]
+`);
+    expect(parsed[0]?.transport).toEqual({
+      type: "stdio",
+      command: "npx",
+      args: ["-y", "@org/pkg,v2", "C:\\tools\\run.exe"],
+    });
+  });
+
+  it("parses single-quoted literal strings without unescaping backslashes", () => {
+    const parsed = parseMcpToml(`[mcp_servers.win]
+command = 'C:\\Program Files\\Tool\\bin.exe' # inline comment
+args = ['--dir', 'C:\\Users\\dev\\#work']
+`);
+    expect(parsed[0]?.transport).toEqual({
+      type: "stdio",
+      command: "C:\\Program Files\\Tool\\bin.exe",
+      args: ["--dir", "C:\\Users\\dev\\#work"],
+    });
+  });
+
+  it("preserves # inside double-quoted strings while stripping trailing inline comments", () => {
+    const parsed = parseMcpToml(`[mcp_servers.hash]
+url = "https://example.com/mcp#frag" # trailing comment
+`);
+    expect(parsed[0]?.transport).toEqual({
+      type: "http",
+      url: "https://example.com/mcp#frag",
+    });
   });
 
   it("round-trips http servers with headers", () => {
@@ -77,7 +149,7 @@ describe("encodeMcpToml / parseMcpToml", () => {
     const parsed = parseMcpToml(`[mcp_servers.filesystem]
 command = "npx"
 args = ["-y", "server"]
-env = { API_KEY = "secret", OTHER = "x" }
+env = { API_KEY = "secret", OTHER = "x,y", WIN_PATH = 'C:\\bin\\tool.exe' }
 
 [mcp_servers.linear]
 url = "https://mcp.linear.app/mcp"
@@ -87,7 +159,7 @@ headers = { "Authorization" = "Bearer token", "x-mcp-session-id" = "{{session_id
       type: "stdio",
       command: "npx",
       args: ["-y", "server"],
-      env: { API_KEY: "secret", OTHER: "x" },
+      env: { API_KEY: "secret", OTHER: "x,y", WIN_PATH: "C:\\bin\\tool.exe" },
     });
     expect(parsed.find((s) => s.id === "linear")?.transport).toEqual({
       type: "http",
@@ -154,28 +226,76 @@ describe("mergeMcpToml", () => {
     const existing = `[ui]
 yolo = false
 
-[mcp_servers.palamhealth]
-command = "/old/palamhealth"
+[mcp_servers.acme]
+command = "/old/acme"
 
-[mcp_servers.unifi]
-command = "/home/blitz/.local/bin/uvx"
+[mcp_servers.homelab]
+command = "/usr/local/bin/uvx"
 `;
     const merged = mergeMcpToml(
       existing,
       [{ id: "github", name: "github", transport: { type: "stdio", command: "gh-mcp" } }],
-      ["palamhealth", "github"],
+      ["acme", "github"],
     );
     expect(merged).toContain("[ui]");
     expect(merged).toContain("yolo = false");
-    expect(merged).toContain("[mcp_servers.unifi]");
+    expect(merged).toContain("[mcp_servers.homelab]");
     expect(merged).toContain("[mcp_servers.github]");
-    expect(merged).not.toContain("palamhealth");
+    expect(merged).not.toContain("acme");
   });
 
-  it("strips mcp_servers tables from mixed files", () => {
-    const stripped = stripMcpTomlTables(`[ui]\nyolo = true\n\n[mcp_servers.x]\ncommand = "x"\n`);
+  it("preserves unmanaged mcp_servers blocks verbatim including Codex/Grok fields and comments", () => {
+    const existing = `model = "gpt-5"
+
+[mcp_servers.managed_old]
+command = "old-bin"
+
+# Custom unmanaged server
+[mcp_servers.custom_remote]
+url = "https://custom.example.com/mcp"
+bearer_token_env_var = "CUSTOM_TOKEN"
+env_http_headers = { "X-Env-Key" = "MY_ENV_KEY" }
+cwd = "/workspace/app"
+startup_timeout_sec = 30
+tool_timeout_sec = 120
+enabled_tools = ["search", "fetch"] # keep this comment
+`;
+    const merged = mergeMcpToml(
+      existing,
+      [{ id: "github", name: "github", transport: { type: "stdio", command: "gh-mcp" } }],
+      ["managed_old", "github"],
+      { headerTable: "http_headers" },
+    );
+
+    expect(merged).not.toContain("managed_old");
+    expect(merged).toContain("# Custom unmanaged server");
+    expect(merged).toContain('bearer_token_env_var = "CUSTOM_TOKEN"');
+    expect(merged).toContain('env_http_headers = { "X-Env-Key" = "MY_ENV_KEY" }');
+    expect(merged).toContain('cwd = "/workspace/app"');
+    expect(merged).toContain("startup_timeout_sec = 30");
+    expect(merged).toContain("tool_timeout_sec = 120");
+    expect(merged).toContain('enabled_tools = ["search", "fetch"] # keep this comment');
+    expect(merged).toContain("[mcp_servers.github]");
+  });
+
+  it("strips mcp_servers tables without stripping mcp_servers_extra", () => {
+    const stripped = stripMcpTomlTables(`[ui]
+yolo = true
+
+[mcp_servers.x]
+command = "x"
+
+[mcp_servers_extra]
+enabled = true
+
+[mcp_servers_extra.custom]
+foo = "bar"
+`);
     expect(stripped).toContain("[ui]");
-    expect(stripped).not.toContain("mcp_servers");
+    expect(stripped).not.toContain("[mcp_servers.x]");
+    expect(stripped).toContain("[mcp_servers_extra]");
+    expect(stripped).toContain("[mcp_servers_extra.custom]");
+    expect(stripped).toContain('foo = "bar"');
   });
 
   it("re-encodes Codex merges with http_headers", () => {

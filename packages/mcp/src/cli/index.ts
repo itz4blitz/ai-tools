@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { registry } from "../adapters/registry.js";
 import type { BaseMCPAdapter } from "../adapters/base.js";
-import type { MCPServerDefinition, MCPConfig, GeneratedFile } from "../types/index.js";
+import type { MCPServerDefinition, MCPConfig } from "../types/index.js";
 import { filterServers } from "../scope.js";
 import { auditServers } from "../audit.js";
 
@@ -97,7 +97,7 @@ export async function run(args: string[]): Promise<void> {
 async function cmdInit(flags: Flags): Promise<void> {
   const { writeFile } = await import("node:fs/promises");
 
-  const template = `import { defineConfig } from "@itz4blitz/ai-tools-mcp";
+  const template = `import { defineConfig } from "@itz4blitz/ai-tools/mcp";
 
 export default defineConfig({
   servers: [
@@ -160,11 +160,22 @@ async function cmdGenerate(flags: Flags): Promise<void> {
 
   const config = await loadConfig(flags.config);
   const servers = requireConfiguredServers(selectServers(config.servers, flags), "write");
+  const layer = flags.layer ?? "project";
 
   console.log(`Generating MCP configs for ${adapters.length} tool(s)...\n`);
 
   for (const adapter of adapters) {
+    if (layer === "project" && adapter.scope === "user-only") {
+      console.log(`  - ${adapter.name}: skipped (user-only host; use --layer=user to generate)`);
+      continue;
+    }
+
     const files = await adapter.generate(servers);
+    if (layer === "user" && adapter.userConfigPath) {
+      for (const file of files) {
+        file.path = adapter.userConfigPath;
+      }
+    }
 
     for (const file of files) {
       if (flags.dryRun) {
@@ -175,7 +186,7 @@ async function cmdGenerate(flags: Flags): Promise<void> {
     }
 
     if (!flags.dryRun) {
-      await writeFiles(files);
+      await adapter.install(files, layer === "user" ? homedir() : process.cwd());
     }
   }
 
@@ -197,20 +208,31 @@ async function cmdInstall(flags: Flags): Promise<void> {
   console.log(`Installing MCP servers into ${adapters.length} tool(s)...\n`);
 
   for (const adapter of adapters) {
-    const files = await adapter.generate(servers);
-    if (layer === "user" && adapter.userConfigPath) {
-      for (const file of files) {
-        file.path = adapter.userConfigPath;
-      }
+    if (layer === "project" && adapter.scope === "user-only") {
+      console.log(`  - ${adapter.name}: skipped (user-only host; use --layer=user to install)`);
+      continue;
     }
 
-    if (flags.dryRun) {
-      for (const file of files) {
-        console.log(`  [dry-run] Would install: ${file.path}`);
+    try {
+      const files = await adapter.generate(servers);
+      if (layer === "user" && adapter.userConfigPath) {
+        for (const file of files) {
+          file.path = adapter.userConfigPath;
+        }
       }
-    } else {
-      await adapter.install(files, layer === "user" ? homedir() : process.cwd());
-      console.log(`  \u2713 ${adapter.name}`);
+
+      if (flags.dryRun) {
+        for (const file of files) {
+          console.log(`  [dry-run] Would install: ${file.path}`);
+        }
+      } else {
+        await adapter.install(files, layer === "user" ? homedir() : process.cwd());
+        console.log(`  \u2713 ${adapter.name}`);
+      }
+    } catch (err) {
+      if (adapters.length === 1) throw err;
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`  \u2717 ${adapter.name}: skipped (${message})`);
     }
   }
 
@@ -248,19 +270,30 @@ async function cmdSync(flags: Flags): Promise<void> {
 
   const layer = flags.layer ?? "project";
   for (const adapter of adapters) {
-    const files = await adapter.generate(servers);
-    if (layer === "user" && adapter.userConfigPath) {
-      for (const file of files) {
-        file.path = adapter.userConfigPath;
-      }
+    if (layer === "project" && adapter.scope === "user-only") {
+      console.log(`  - ${adapter.name}: skipped (user-only host; use --layer=user to install)`);
+      continue;
     }
-    if (flags.dryRun) {
-      for (const file of files) {
-        console.log(`  [dry-run] Would write: ${file.path}`);
+
+    try {
+      const files = await adapter.generate(servers);
+      if (layer === "user" && adapter.userConfigPath) {
+        for (const file of files) {
+          file.path = adapter.userConfigPath;
+        }
       }
-    } else {
-      await adapter.install(files, layer === "user" ? homedir() : process.cwd());
-      console.log(`  \u2713 ${adapter.name}`);
+      if (flags.dryRun) {
+        for (const file of files) {
+          console.log(`  [dry-run] Would write: ${file.path}`);
+        }
+      } else {
+        await adapter.install(files, layer === "user" ? homedir() : process.cwd());
+        console.log(`  \u2713 ${adapter.name}`);
+      }
+    } catch (err) {
+      if (adapters.length === 1) throw err;
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`  \u2717 ${adapter.name}: skipped (${message})`);
     }
   }
 
@@ -398,15 +431,4 @@ function requireConfiguredServers(
   );
   process.exit(1);
   return servers;
-}
-
-async function writeFiles(files: GeneratedFile[]): Promise<void> {
-  const { writeFile, mkdir } = await import("node:fs/promises");
-  const { dirname, resolve } = await import("node:path");
-
-  for (const file of files) {
-    const fullPath = resolve(process.cwd(), file.path);
-    await mkdir(dirname(fullPath), { recursive: true });
-    await writeFile(fullPath, file.content, "utf-8");
-  }
 }

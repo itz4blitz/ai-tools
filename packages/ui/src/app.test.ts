@@ -23,7 +23,13 @@ vi.mock("@itz4blitz/ai-tools-sessions", () => {
 
 vi.mock("@itz4blitz/ai-tools-sessions/adapters/all", () => ({}));
 
-import { createInitialState, detectTools, computeConfigHealth, getStatusBarData } from "./app.js";
+import {
+  createInitialState,
+  detectMode,
+  detectTools,
+  computeConfigHealth,
+  getStatusBarData,
+} from "./app.js";
 import { registry } from "@itz4blitz/ai-tools-sessions";
 import type { AppState } from "./types.js";
 
@@ -154,20 +160,46 @@ describe("detectTools()", () => {
   });
 });
 
-// -- computeConfigHealth --
+// -- computeConfigHealth & detectMode --
 
-describe("computeConfigHealth()", () => {
-  it("returns error when .ai-tools directory does not exist", async () => {
-    vi.mock("node:fs", async (importOriginal) => {
-      const orig = await importOriginal<typeof import("node:fs")>();
-      return {
-        ...orig,
-        existsSync: vi.fn().mockReturnValue(false),
-      };
-    });
+describe("detectMode() and computeConfigHealth()", () => {
+  it("returns error when neither .ai-tools nor direct markers exist", async () => {
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const dir = mkdtempSync(join(tmpdir(), "ai-tools-ui-empty-"));
+    const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(dir);
+    try {
+      expect(await detectMode()).toBe("unknown");
+      expect(await computeConfigHealth()).toBe("error");
+    } finally {
+      cwdSpy.mockRestore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 
-    const health = await computeConfigHealth();
-    expect(health).toBe("error");
+  it("detects expanded direct markers and reports healthy for direct-mode repos", async () => {
+    const { mkdtempSync, rmSync, writeFileSync, mkdirSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+
+    for (const marker of [".cursor", "AGENTS.md", ".mcp.json", "opencode.json", ".windsurf"]) {
+      const dir = mkdtempSync(join(tmpdir(), "ai-tools-ui-direct-"));
+      const target = join(dir, marker);
+      if (marker.startsWith(".") && !marker.includes(".", 1)) {
+        mkdirSync(target, { recursive: true });
+      } else {
+        writeFileSync(target, "", "utf-8");
+      }
+      const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(dir);
+      try {
+        expect(await detectMode()).toBe("direct");
+        expect(await computeConfigHealth()).toBe("healthy");
+      } finally {
+        cwdSpy.mockRestore();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
   });
 });
 

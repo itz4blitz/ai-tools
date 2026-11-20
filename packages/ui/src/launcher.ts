@@ -30,6 +30,7 @@ export function launchTool(
       stdio: "inherit",
       cwd: options.cwd ?? process.cwd(),
       env: options.env ?? process.env,
+      shell: process.platform === "win32",
     });
 
     const pid = child.pid ?? 0;

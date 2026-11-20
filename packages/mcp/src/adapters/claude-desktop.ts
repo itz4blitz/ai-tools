@@ -35,6 +35,7 @@ class ClaudeDesktopMCPAdapter extends BaseMCPAdapter {
   readonly name = "Claude Desktop";
   readonly nativeSupport = true;
   readonly configPath = "claude_desktop_config.json";
+  override readonly scope = "user-only" as const;
 
   async generate(servers: MCPServerDefinition[]): Promise<GeneratedFile[]> {
     const mcpServers: Record<string, unknown> = {};

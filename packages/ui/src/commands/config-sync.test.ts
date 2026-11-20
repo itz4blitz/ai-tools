@@ -44,7 +44,7 @@ describe("triggerGenerate()", () => {
     expect(execFile).toHaveBeenCalledWith(
       "npx",
       ["ai-tools", "generate"],
-      expect.objectContaining({ cwd: process.cwd() }),
+      expect.objectContaining({ cwd: process.cwd(), shell: process.platform === "win32" }),
       expect.any(Function),
     );
   });
@@ -257,6 +257,20 @@ describe("getCanonicalStatus()", () => {
     const status = await getCanonicalStatus();
     expect(status.exists).toBe(true);
     expect(status.engineCount).toBe(0);
+  });
+
+  it("excludes config.json and manifest.json from engineCount", async () => {
+    (existsSync as ReturnType<typeof vi.fn>).mockReturnValue(true);
+    (readdirSync as ReturnType<typeof vi.fn>).mockReturnValue([
+      "config.json",
+      "manifest.json",
+      "hooks.json",
+      "mcp.json",
+    ]);
+
+    const status = await getCanonicalStatus();
+    expect(status.exists).toBe(true);
+    expect(status.engineCount).toBe(2);
   });
 
   it("includes the path in result", async () => {

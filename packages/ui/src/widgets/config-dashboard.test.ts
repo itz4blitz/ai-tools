@@ -68,6 +68,26 @@ describe("getEngineStatus()", () => {
     expect(mcp?.configured).toBe(true);
   });
 
+  it("detects mcp.config.ts and mcp.config.js for mcp engine", async () => {
+    (existsSync as ReturnType<typeof vi.fn>).mockImplementation((path: string) => {
+      return typeof path === "string" && path.endsWith("/mcp.config.ts");
+    });
+
+    let statuses = await getEngineStatus();
+    let mcp = statuses.find((s) => s.engine === "mcp");
+    expect(mcp?.configured).toBe(true);
+    expect(mcp?.configPath).toContain("mcp.config.ts");
+
+    (existsSync as ReturnType<typeof vi.fn>).mockImplementation((path: string) => {
+      return typeof path === "string" && path.endsWith("/mcp.config.js");
+    });
+
+    statuses = await getEngineStatus();
+    mcp = statuses.find((s) => s.engine === "mcp");
+    expect(mcp?.configured).toBe(true);
+    expect(mcp?.configPath).toContain("mcp.config.js");
+  });
+
   it("detects multiple configured engines", async () => {
     (existsSync as ReturnType<typeof vi.fn>).mockImplementation((path: string) => {
       return (
@@ -191,6 +211,12 @@ describe("getConfigDashboardData()", () => {
     expect(data.configHealth).toBe("error");
     expect(data.manifestHealth.exists).toBe(false);
     expect(data.deployments).toEqual([]);
+  });
+
+  it("reports healthy in direct mode even without .ai-tools/manifest.json", async () => {
+    (existsSync as ReturnType<typeof vi.fn>).mockReturnValue(false);
+    const data = await getConfigDashboardData("direct");
+    expect(data.configHealth).toBe("healthy");
   });
 });
 

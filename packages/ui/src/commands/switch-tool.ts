@@ -1,5 +1,14 @@
 import type { PaneState } from "../types.js";
 
+const TOOL_ID_ALIASES: Record<string, string> = {
+  "claude-code": "claude",
+  "gemini-cli": "gemini",
+};
+
+function normalizeToolId(toolId: string): string {
+  return TOOL_ID_ALIASES[toolId] ?? toolId;
+}
+
 /**
  * Static tool definitions with their CLI commands.
  */
@@ -25,8 +34,12 @@ export type SwitchResult = {
  * Switch to a tool: focus existing pane or signal that a new one should be spawned.
  */
 export function switchTool(toolId: string, panes: PaneState[]): SwitchResult | null {
-  // Check if there's already a pane for this tool
-  const existingIndex = panes.findIndex((p) => p.toolId === toolId);
+  const normalizedId = normalizeToolId(toolId);
+
+  // Check if there's already a pane for this tool (matching direct ID or canonical alias)
+  const existingIndex = panes.findIndex(
+    (p) => p.toolId === toolId || normalizeToolId(p.toolId) === normalizedId,
+  );
 
   if (existingIndex >= 0) {
     return {
@@ -37,7 +50,7 @@ export function switchTool(toolId: string, panes: PaneState[]): SwitchResult | n
   }
 
   // Tool needs to be spawned
-  const def = TOOL_DEFINITIONS[toolId];
+  const def = TOOL_DEFINITIONS[toolId] ?? TOOL_DEFINITIONS[normalizedId];
   if (!def) return null;
 
   return {

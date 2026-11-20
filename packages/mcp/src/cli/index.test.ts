@@ -62,6 +62,7 @@ function makeAdapter(overrides: Partial<BaseMCPAdapter> = {}): BaseMCPAdapter {
     importUser:
       overrides.importUser ?? vi.fn<() => Promise<MCPServerDefinition[]>>().mockResolvedValue([]),
     userConfigPath: overrides.userConfigPath,
+    scope: overrides.scope ?? "both",
   } as unknown as BaseMCPAdapter;
 }
 
@@ -1051,5 +1052,135 @@ describe("run() - audit command", () => {
     await expect(run(["audit"])).rejects.toThrow("process.exit(1)");
     expect(allLog()).toContain("interactive-palamhealth-account");
     expect(exitCode).toBe(1);
+  });
+});
+
+describe("run() - init, layer isolation, merge-safe generate, and multi-tool resilience", () => {
+  it("cmdInit template imports from @itz4blitz/ai-tools/mcp", async () => {
+    await run(["init"]);
+    expect(mockWriteFile).toHaveBeenCalledWith(
+      "mcp.config.ts",
+      expect.stringContaining('from "@itz4blitz/ai-tools/mcp"'),
+      "utf-8",
+    );
+    const written = String(mockWriteFile.mock.calls[0]?.[1] ?? "");
+    expect(written).not.toContain("@itz4blitz/ai-tools-mcp");
+  });
+
+  it("skips user-only adapters when --layer=project is active in install and sync", async () => {
+    const desktopInstall = vi
+      .fn<(files: GeneratedFile[], cwd?: string) => Promise<void>>()
+      .mockResolvedValue(undefined);
+    const cursorInstall = vi
+      .fn<(files: GeneratedFile[], cwd?: string) => Promise<void>>()
+      .mockResolvedValue(undefined);
+    const desktop = makeAdapter({
+      id: "claude-desktop",
+      name: "Claude Desktop",
+      scope: "user-only",
+      install: desktopInstall,
+    });
+    const cursor = makeAdapter({
+      id: "cursor",
+      name: "Cursor",
+      scope: "both",
+      install: cursorInstall,
+    });
+    mockRegistryDetectAll.mockResolvedValue([desktop, cursor]);
+
+    await withConfig([stdioServer("github")], async (configPath) => {
+      await run(["install", `--config=${configPath}`, "--layer=project"]);
+    });
+
+    expect(desktopInstall).not.toHaveBeenCalled();
+    expect(cursorInstall).toHaveBeenCalledTimes(1);
+    expect(allLog()).toContain("Claude Desktop: skipped (user-only host");
+
+    logOutput = [];
+    cursorInstall.mockClear();
+    await withConfig([stdioServer("github")], async (configPath) => {
+      await run(["sync", `--config=${configPath}`, "--layer=project"]);
+    });
+
+    expect(desktopInstall).not.toHaveBeenCalled();
+    expect(cursorInstall).toHaveBeenCalledTimes(1);
+    expect(allLog()).toContain("Claude Desktop: skipped (user-only host");
+  });
+
+  it("allows user-only adapters when --layer=user is active", async () => {
+    const desktopInstall = vi
+      .fn<(files: GeneratedFile[], cwd?: string) => Promise<void>>()
+      .mockResolvedValue(undefined);
+    const desktop = makeAdapter({
+      id: "claude-desktop",
+      name: "Claude Desktop",
+      scope: "user-only",
+      install: desktopInstall,
+    });
+    mockRegistryDetectAll.mockResolvedValue([desktop]);
+
+    await withConfig([stdioServer("github", { layer: "user" })], async (configPath) => {
+      await run(["install", `--config=${configPath}`, "--layer=user"]);
+    });
+
+    expect(desktopInstall).toHaveBeenCalledTimes(1);
+  });
+
+  it("cmdGenerate delegates writes to adapter.install() so merge overrides are preserved", async () => {
+    const installFn = vi
+      .fn<(files: GeneratedFile[], cwd?: string) => Promise<void>>()
+      .mockResolvedValue(undefined);
+    const adapter = makeAdapter({
+      id: "codex",
+      name: "Codex",
+      install: installFn,
+    });
+    mockRegistryDetectAll.mockResolvedValue([adapter]);
+
+    await withConfig([stdioServer("github")], async (configPath) => {
+      await run(["generate", `--config=${configPath}`]);
+    });
+
+    expect(installFn).toHaveBeenCalledTimes(1);
+    expect(mockWriteFile).not.toHaveBeenCalled();
+  });
+
+  it("catches per-adapter errors during multi-tool install and sync without aborting remaining tools", async () => {
+    const failing = makeAdapter({
+      id: "claude-desktop",
+      name: "Claude Desktop",
+      generate: vi
+        .fn<(servers: MCPServerDefinition[]) => Promise<GeneratedFile[]>>()
+        .mockRejectedValue(new Error("stdio MCP servers only")),
+    });
+    const succeedingInstall = vi
+      .fn<(files: GeneratedFile[], cwd?: string) => Promise<void>>()
+      .mockResolvedValue(undefined);
+    const succeeding = makeAdapter({
+      id: "cursor",
+      name: "Cursor",
+      install: succeedingInstall,
+    });
+    mockRegistryDetectAll.mockResolvedValue([failing, succeeding]);
+
+    await withConfig([stdioServer("github")], async (configPath) => {
+      await run(["install", `--config=${configPath}`]);
+    });
+
+    expect(allWarn()).toContain("Claude Desktop: skipped (stdio MCP servers only)");
+    expect(succeedingInstall).toHaveBeenCalledTimes(1);
+    expect(allLog()).toContain("\u2713 Cursor");
+
+    warnOutput = [];
+    logOutput = [];
+    succeedingInstall.mockClear();
+
+    await withConfig([stdioServer("github")], async (configPath) => {
+      await run(["sync", `--config=${configPath}`]);
+    });
+
+    expect(allWarn()).toContain("Claude Desktop: skipped (stdio MCP servers only)");
+    expect(succeedingInstall).toHaveBeenCalledTimes(1);
+    expect(allLog()).toContain("\u2713 Cursor");
   });
 });

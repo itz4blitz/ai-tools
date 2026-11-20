@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { homedir } from "node:os";
 
@@ -93,7 +94,9 @@ describe("GrokMCPAdapter", () => {
   });
 
   it("imports project TOML servers", async () => {
-    vi.mocked(existsSync).mockImplementation((path) => String(path).endsWith(".grok/config.toml"));
+    vi.mocked(existsSync).mockImplementation((path) =>
+      String(path).endsWith(join(".grok", "config.toml")),
+    );
     vi.mocked(readFile).mockResolvedValue(`[mcp_servers.github]
 command = "gh-mcp"
 `);

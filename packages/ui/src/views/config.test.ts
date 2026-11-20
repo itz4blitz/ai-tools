@@ -372,6 +372,33 @@ describe("renderConfigView", () => {
     expect(texts.some((t) => t.includes("ai-hooks.config.ts"))).toBe(true);
   });
 
+  it("formats cwd-relative engine and deployment paths portably via path.relative", async () => {
+    const { join } = await import("node:path");
+    const cwdConfig = join(process.cwd(), "mcp.config.ts");
+    const cwdDeploy = join(process.cwd(), ".cursor", "mcp.json");
+    const state = makeState({
+      engines: [
+        makeEngine({
+          engine: "mcp",
+          configured: true,
+          configPath: cwdConfig,
+        }),
+      ],
+      deployments: [
+        makeDeployment({
+          adapterId: "cursor",
+          targetPath: cwdDeploy,
+        }),
+      ],
+    });
+    const vnode = renderConfigView(mockUi, state) as unknown as AnyNode;
+    const texts = allText(vnode);
+    expect(texts.some((t) => t.includes("mcp.config.ts") && !t.includes(process.cwd()))).toBe(true);
+    expect(
+      texts.some((t) => t.includes(join(".cursor", "mcp.json")) && !t.includes(process.cwd())),
+    ).toBe(true);
+  });
+
   // ── Actions hint bar ───────────────────────────────
 
   it("includes all action hints in the bottom bar", () => {

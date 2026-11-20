@@ -210,17 +210,28 @@ export function getIconChar(name: IconName, useFallback = false): string {
   return useFallback ? icon.fallback : icon.glyph;
 }
 
+const TOOL_ID_ALIASES: Record<string, string> = {
+  "claude-code": "claude",
+  "gemini-cli": "gemini",
+};
+
+function normalizeToolId(toolId: string): string {
+  const lower = toolId.toLowerCase();
+  return TOOL_ID_ALIASES[lower] ?? lower;
+}
+
 /**
  * Get the tool icon for a given tool ID.
  */
 export function getToolIcon(toolId: string): IconName {
-  if (toolId.startsWith("claude")) return "tool.claude";
-  if (toolId.startsWith("codex")) return "tool.codex";
-  if (toolId.startsWith("gemini")) return "tool.gemini";
-  if (toolId.startsWith("cursor")) return "tool.cursor";
-  if (toolId.startsWith("opencode")) return "tool.opencode";
-  if (toolId.startsWith("amp")) return "tool.amp";
-  if (toolId.startsWith("cline")) return "tool.cline";
+  const normalized = normalizeToolId(toolId);
+  if (normalized.startsWith("claude")) return "tool.claude";
+  if (normalized.startsWith("codex")) return "tool.codex";
+  if (normalized.startsWith("gemini")) return "tool.gemini";
+  if (normalized.startsWith("cursor")) return "tool.cursor";
+  if (normalized.startsWith("opencode")) return "tool.opencode";
+  if (normalized.startsWith("amp")) return "tool.amp";
+  if (normalized.startsWith("cline")) return "tool.cline";
   return "tool.generic";
 }
 
@@ -228,13 +239,14 @@ export function getToolIcon(toolId: string): IconName {
  * Get the brand color for a given tool ID.
  */
 export function getToolColor(toolId: string): RgbColor {
-  if (toolId.startsWith("claude")) return TOOLS.claude;
-  if (toolId.startsWith("codex")) return TOOLS.codex;
-  if (toolId.startsWith("gemini")) return TOOLS.gemini;
-  if (toolId.startsWith("cursor")) return TOOLS.cursor;
-  if (toolId.startsWith("opencode")) return TOOLS.opencode;
-  if (toolId.startsWith("amp")) return TOOLS.amp;
-  if (toolId.startsWith("cline")) return TOOLS.cline;
+  const normalized = normalizeToolId(toolId);
+  if (normalized.startsWith("claude")) return TOOLS.claude;
+  if (normalized.startsWith("codex")) return TOOLS.codex;
+  if (normalized.startsWith("gemini")) return TOOLS.gemini;
+  if (normalized.startsWith("cursor")) return TOOLS.cursor;
+  if (normalized.startsWith("opencode")) return TOOLS.opencode;
+  if (normalized.startsWith("amp")) return TOOLS.amp;
+  if (normalized.startsWith("cline")) return TOOLS.cline;
   return STATUS.neutral;
 }
 

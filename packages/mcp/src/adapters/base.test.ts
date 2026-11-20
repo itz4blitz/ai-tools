@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { BaseMCPAdapter } from "./base.js";
 import type { MCPServerDefinition, GeneratedFile } from "../types/index.js";
@@ -86,13 +87,15 @@ describe("BaseMCPAdapter", () => {
     it("uses provided cwd to resolve config path", async () => {
       mockedExistsSync.mockReturnValue(true);
       await adapter.detect("/custom/dir");
-      expect(mockedExistsSync).toHaveBeenCalledWith(expect.stringContaining("custom/dir"));
+      expect(mockedExistsSync).toHaveBeenCalledWith(expect.stringContaining(join("custom", "dir")));
     });
 
     it("uses process.cwd() when no cwd is provided", async () => {
       mockedExistsSync.mockReturnValue(false);
       await adapter.detect();
-      expect(mockedExistsSync).toHaveBeenCalledWith(expect.stringContaining(adapter.configPath));
+      expect(mockedExistsSync).toHaveBeenCalledWith(
+        expect.stringContaining(join(".test", "mcp.json")),
+      );
     });
   });
 
@@ -152,9 +155,12 @@ describe("BaseMCPAdapter", () => {
 
       await adapter.install(files);
 
-      expect(mockedMkdir).toHaveBeenCalledWith(expect.stringContaining("deep/nested/dir"), {
-        recursive: true,
-      });
+      expect(mockedMkdir).toHaveBeenCalledWith(
+        expect.stringContaining(join("deep", "nested", "dir")),
+        {
+          recursive: true,
+        },
+      );
     });
 
     it("handles empty file array", async () => {
@@ -172,7 +178,7 @@ describe("BaseMCPAdapter", () => {
       await adapter.install(files, "/custom/project");
 
       expect(mockedWriteFile).toHaveBeenCalledWith(
-        expect.stringContaining("/custom/project"),
+        expect.stringContaining(join("custom", "project")),
         "{}",
         "utf-8",
       );
@@ -186,7 +192,7 @@ describe("BaseMCPAdapter", () => {
 
       await adapter.uninstall();
 
-      expect(mockedRm).toHaveBeenCalledWith(expect.stringContaining(adapter.configPath));
+      expect(mockedRm).toHaveBeenCalledWith(expect.stringContaining(join(".test", "mcp.json")));
     });
 
     it("does nothing when config file does not exist", async () => {
@@ -203,7 +209,7 @@ describe("BaseMCPAdapter", () => {
 
       await adapter.uninstall("/custom/dir");
 
-      expect(mockedExistsSync).toHaveBeenCalledWith(expect.stringContaining("/custom/dir"));
+      expect(mockedExistsSync).toHaveBeenCalledWith(expect.stringContaining(join("custom", "dir")));
     });
   });
 

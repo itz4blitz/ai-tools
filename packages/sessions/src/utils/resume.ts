@@ -2,15 +2,76 @@ import { spawn } from "node:child_process";
 import type { SessionContext } from "../types/index.js";
 import { formatHandoffMarkdown } from "./markdown.js";
 
-/**
- * Tool command mappings for launching with context.
- */
-const TOOL_COMMANDS: Record<string, { command: string; promptFlag: string }> = {
-  claude: { command: "claude", promptFlag: "--prompt" },
-  codex: { command: "codex", promptFlag: "--prompt" },
-  gemini: { command: "gemini", promptFlag: "" },
-  opencode: { command: "opencode", promptFlag: "" },
+export type HandoffTargetConfig = {
+  id: string;
+  aliases?: readonly string[];
+  name: string;
+  command: string;
+  /** How the handoff prompt is passed: positional arg, or flag + arg. */
+  promptMode: "positional" | "flag";
+  promptFlag?: string;
 };
+
+/**
+ * Single source of truth for tools that support handoff launching.
+ */
+export const HANDOFF_TARGETS: readonly HandoffTargetConfig[] = [
+  {
+    id: "claude",
+    aliases: ["claude-code"],
+    name: "Claude Code",
+    command: "claude",
+    promptMode: "positional",
+  },
+  {
+    id: "codex",
+    name: "Codex",
+    command: "codex",
+    promptMode: "positional",
+  },
+  {
+    id: "gemini",
+    aliases: ["gemini-cli"],
+    name: "Gemini CLI",
+    command: "gemini",
+    promptMode: "flag",
+    promptFlag: "-i",
+  },
+  {
+    id: "opencode",
+    name: "OpenCode",
+    command: "opencode",
+    promptMode: "flag",
+    promptFlag: "--prompt",
+  },
+];
+
+/**
+ * Resolve a handoff target by primary ID or canonical alias (e.g. "claude-code" -> "claude").
+ */
+export function resolveHandoffTarget(toolId: string): HandoffTargetConfig | undefined {
+  return HANDOFF_TARGETS.find(
+    (target) => target.id === toolId || (target.aliases?.includes(toolId) ?? false),
+  );
+}
+
+/**
+ * Build the CLI command and args to launch a target tool with a handoff prompt.
+ */
+export function buildHandoffCommand(
+  toolId: string,
+  handoffMarkdown: string,
+): { command: string; args: string[] } | null {
+  const target = resolveHandoffTarget(toolId);
+  if (!target) return null;
+
+  const args =
+    target.promptMode === "flag" && target.promptFlag
+      ? [target.promptFlag, handoffMarkdown]
+      : [handoffMarkdown];
+
+  return { command: target.command, args };
+}
 
 /**
  * Launch a tool with handoff context.
@@ -19,16 +80,11 @@ export function launchWithContext(
   tool: string,
   context: SessionContext,
 ): { command: string; args: string[] } | null {
-  const toolConfig = TOOL_COMMANDS[tool];
-  if (!toolConfig) return null;
+  const target = resolveHandoffTarget(tool);
+  if (!target) return null;
 
   const markdown = formatHandoffMarkdown(context);
-  const args: string[] = [];
-  if (toolConfig.promptFlag) {
-    args.push(toolConfig.promptFlag, markdown);
-  }
-
-  return { command: toolConfig.command, args };
+  return buildHandoffCommand(target.id, markdown);
 }
 
 /**
@@ -42,5 +98,6 @@ export function spawnTool(
   return spawn(command, args, {
     stdio: "inherit",
     cwd: options?.cwd,
+    shell: process.platform === "win32",
   });
 }

@@ -38,6 +38,8 @@ export async function triggerDetect(): Promise<string> {
   return execCommand("npx", ["ai-tools", "detect"]);
 }
 
+const NON_ENGINE_FILES = new Set(["config.json", "manifest.json"]);
+
 /**
  * Check the .ai-tools/ directory status.
  */
@@ -53,7 +55,9 @@ export async function getCanonicalStatus(): Promise<CanonicalStatus> {
     try {
       const entries = readdirSync(configDir);
       engineCount = entries.filter(
-        (e) => e.endsWith(".json") || e.endsWith(".ts") || e.endsWith(".js"),
+        (e) =>
+          !NON_ENGINE_FILES.has(e) &&
+          (e.endsWith(".json") || e.endsWith(".ts") || e.endsWith(".js")),
       ).length;
     } catch {
       // Directory read failed
@@ -69,12 +73,17 @@ export async function getCanonicalStatus(): Promise<CanonicalStatus> {
 
 function execCommand(command: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(command, args, { cwd: process.cwd() }, (error, stdout, stderr) => {
-      if (error) {
-        reject(new Error(stderr || error.message));
-        return;
-      }
-      resolve(stdout);
-    });
+    execFile(
+      command,
+      args,
+      { cwd: process.cwd(), shell: process.platform === "win32" },
+      (error, stdout, stderr) => {
+        if (error) {
+          reject(new Error(stderr || error.message));
+          return;
+        }
+        resolve(stdout);
+      },
+    );
   });
 }

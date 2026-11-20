@@ -36,6 +36,7 @@ describe("launchTool", () => {
       [],
       expect.objectContaining({
         stdio: "inherit",
+        shell: process.platform === "win32",
       }),
     );
     expect(result.pid).toBe(1234);
