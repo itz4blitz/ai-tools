@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 import { registry, BaseAdapter } from "./index.js";
-import { resolve } from "node:path";
 import type {
   AdapterCapabilities,
   GeneratedConfig,
@@ -12,13 +13,13 @@ import type {
  * Event mapping: ai-hooks universal events -> Codex native hooks.
  *
  * Codex supports lifecycle hooks through `.codex/hooks.json` with events like:
- *   SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop
+ *   SessionStart, SessionEnd, UserPromptSubmit, PreToolUse, PostToolUse, Stop
  *
  * Reference: https://developers.openai.com/codex/hooks
  */
 const EVENT_MAP: Record<string, string[]> = {
   "session:start": ["SessionStart"],
-  "session:end": ["Stop"],
+  "session:end": ["SessionEnd"],
   "prompt:submit": ["UserPromptSubmit"],
   "prompt:response": ["Stop"],
   "tool:before": ["PreToolUse"],
@@ -26,7 +27,6 @@ const EVENT_MAP: Record<string, string[]> = {
   "file:read": ["PreToolUse"],
   "file:write": ["PreToolUse"],
   "file:edit": ["PreToolUse"],
-  "file:delete": ["PreToolUse"],
   "shell:before": ["PreToolUse"],
   "shell:after": ["PostToolUse"],
   "mcp:before": ["PreToolUse"],
@@ -35,19 +35,63 @@ const EVENT_MAP: Record<string, string[]> = {
 
 const REVERSE_MAP: Record<string, HookEventType[]> = {
   SessionStart: ["session:start"],
+  SessionEnd: ["session:end"],
   UserPromptSubmit: ["prompt:submit"],
-  PreToolUse: [
-    "tool:before",
-    "file:read",
-    "file:write",
-    "file:edit",
-    "file:delete",
-    "shell:before",
-    "mcp:before",
-  ],
+  PreToolUse: ["tool:before", "file:read", "file:write", "file:edit", "shell:before", "mcp:before"],
   PostToolUse: ["tool:after", "shell:after", "mcp:after"],
-  Stop: ["session:end", "prompt:response"],
+  Stop: ["prompt:response"],
 };
+
+const HOOKS_JSON_PATH = ".codex/hooks.json";
+const RUNNER_PATH = ".codex/hooks/ai-tools-hooks-runner.js";
+const LEGACY_RUNNER_PATH = ".codex/hooks/ai-hooks-runner.js";
+
+type CodexHookCommand = {
+  type?: string;
+  command?: string;
+  timeout?: number;
+  statusMessage?: string;
+};
+
+type CodexHookMatcherEntry = {
+  matcher?: string;
+  hooks?: CodexHookCommand[];
+  [key: string]: unknown;
+};
+
+type CodexHooksConfigFile = {
+  hooks?: Record<string, CodexHookMatcherEntry[]>;
+  [key: string]: unknown;
+};
+
+function isAiToolsHookCommand(hook: CodexHookCommand): boolean {
+  if (typeof hook.statusMessage === "string" && hook.statusMessage.startsWith("ai-hooks ")) {
+    return true;
+  }
+  if (
+    typeof hook.command === "string" &&
+    (hook.command.includes("ai-tools-hooks-runner.js") ||
+      hook.command.includes("ai-hooks-runner.js"))
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function stripAiToolsEntries(entries: CodexHookMatcherEntry[]): CodexHookMatcherEntry[] {
+  const kept: CodexHookMatcherEntry[] = [];
+  for (const entry of entries) {
+    if (!Array.isArray(entry.hooks)) {
+      kept.push(entry);
+      continue;
+    }
+    const remainingHooks = entry.hooks.filter((hook) => !isAiToolsHookCommand(hook));
+    if (remainingHooks.length > 0) {
+      kept.push({ ...entry, hooks: remainingHooks });
+    }
+  }
+  return kept;
+}
 
 class CodexAdapter extends BaseAdapter {
   readonly id = "codex";
@@ -69,7 +113,6 @@ class CodexAdapter extends BaseAdapter {
       "file:read",
       "file:write",
       "file:edit",
-      "file:delete",
       "shell:before",
       "shell:after",
       "mcp:before",
@@ -81,16 +124,16 @@ class CodexAdapter extends BaseAdapter {
       "file:read",
       "file:write",
       "file:edit",
-      "file:delete",
       "shell:before",
       "mcp:before",
     ],
   };
 
-  async detect(): Promise<boolean> {
-    const hasCommand = await this.commandExists("codex");
-    const hasDir = existsSync(resolve(process.cwd(), ".codex"));
-    return hasCommand || hasDir;
+  async detect(cwd?: string): Promise<boolean> {
+    const dir = cwd ?? process.cwd();
+    const hasDir = existsSync(resolve(dir, ".codex"));
+    if (hasDir) return true;
+    return this.commandExists("codex");
   }
 
   async generate(hooks: HookDefinition[]): Promise<GeneratedConfig[]> {
@@ -107,12 +150,13 @@ class CodexAdapter extends BaseAdapter {
     }
 
     configs.push({
-      path: ".codex/hooks/ai-tools-hooks-runner.js",
+      path: RUNNER_PATH,
       content: this.generateRunner(),
       format: "js",
     });
 
-    const hooksConfig: Record<string, unknown[]> = {};
+    const runnerFullPath = resolve(process.cwd(), RUNNER_PATH);
+    const hooksConfig: Record<string, CodexHookMatcherEntry[]> = {};
     for (const event of neededEvents) {
       if (!hooksConfig[event]) {
         hooksConfig[event] = [];
@@ -121,7 +165,7 @@ class CodexAdapter extends BaseAdapter {
         hooks: [
           {
             type: "command",
-            command: `node ${resolve(process.cwd(), ".codex/hooks/ai-tools-hooks-runner.js")} ${event}`,
+            command: `node "${runnerFullPath}" ${event}`,
             timeout: 10,
             statusMessage: `ai-hooks ${event}`,
           },
@@ -130,12 +174,27 @@ class CodexAdapter extends BaseAdapter {
     }
 
     configs.push({
-      path: ".codex/hooks.json",
+      path: HOOKS_JSON_PATH,
       content: JSON.stringify({ hooks: hooksConfig }, null, 2) + "\n",
       format: "json",
     });
 
     return configs;
+  }
+
+  override async install(configs: GeneratedConfig[]): Promise<void> {
+    for (const config of configs) {
+      const fullPath = resolve(process.cwd(), config.path);
+      await mkdir(dirname(fullPath), { recursive: true });
+
+      if (config.path === HOOKS_JSON_PATH && existsSync(fullPath)) {
+        const merged = await this.mergeHooksConfig(fullPath, config.content);
+        await writeFile(fullPath, JSON.stringify(merged, null, 2) + "\n", "utf-8");
+        continue;
+      }
+
+      await writeFile(fullPath, config.content, "utf-8");
+    }
   }
 
   mapEvent(event: HookEventType): string[] {
@@ -146,10 +205,86 @@ class CodexAdapter extends BaseAdapter {
     return REVERSE_MAP[nativeEvent] ?? [];
   }
 
-  async uninstall(): Promise<void> {
-    await this.removeFile(".codex/hooks/ai-hooks-runner.js");
-    await this.removeFile(".codex/hooks/ai-tools-hooks-runner.js");
-    await this.removeFile(".codex/hooks.json");
+  override async uninstall(): Promise<void> {
+    await this.removeFile(LEGACY_RUNNER_PATH);
+    await this.removeFile(RUNNER_PATH);
+
+    const hooksFullPath = resolve(process.cwd(), HOOKS_JSON_PATH);
+    if (!existsSync(hooksFullPath)) return;
+
+    let existing: CodexHooksConfigFile;
+    try {
+      existing = JSON.parse(await readFile(hooksFullPath, "utf-8")) as CodexHooksConfigFile;
+    } catch {
+      return;
+    }
+
+    if (!existing || typeof existing !== "object" || !existing.hooks) {
+      return;
+    }
+
+    const nextHooks: Record<string, CodexHookMatcherEntry[]> = {};
+    for (const [event, entries] of Object.entries(existing.hooks)) {
+      if (!Array.isArray(entries)) continue;
+      const remaining = stripAiToolsEntries(entries);
+      if (remaining.length > 0) {
+        nextHooks[event] = remaining;
+      }
+    }
+
+    const { hooks: _removedHooks, ...otherKeys } = existing;
+    if (Object.keys(nextHooks).length === 0 && Object.keys(otherKeys).length === 0) {
+      await this.removeFile(HOOKS_JSON_PATH);
+      return;
+    }
+
+    const updated: CodexHooksConfigFile =
+      Object.keys(nextHooks).length > 0 ? { ...otherKeys, hooks: nextHooks } : { ...otherKeys };
+    await writeFile(hooksFullPath, JSON.stringify(updated, null, 2) + "\n", "utf-8");
+  }
+
+  private async mergeHooksConfig(
+    fullPath: string,
+    incomingContent: string,
+  ): Promise<CodexHooksConfigFile> {
+    let existing: CodexHooksConfigFile = {};
+    try {
+      const parsed = JSON.parse(await readFile(fullPath, "utf-8"));
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        existing = parsed as CodexHooksConfigFile;
+      }
+    } catch {
+      existing = {};
+    }
+
+    const incoming = JSON.parse(incomingContent) as CodexHooksConfigFile;
+    const existingHooks =
+      existing.hooks && typeof existing.hooks === "object" ? existing.hooks : {};
+    const incomingHooks =
+      incoming.hooks && typeof incoming.hooks === "object" ? incoming.hooks : {};
+
+    const mergedHooks: Record<string, CodexHookMatcherEntry[]> = {};
+
+    for (const [event, entries] of Object.entries(existingHooks)) {
+      if (!Array.isArray(entries)) continue;
+      const remaining = stripAiToolsEntries(entries);
+      if (remaining.length > 0) {
+        mergedHooks[event] = remaining;
+      }
+    }
+
+    for (const [event, entries] of Object.entries(incomingHooks)) {
+      if (!Array.isArray(entries)) continue;
+      if (!mergedHooks[event]) {
+        mergedHooks[event] = [];
+      }
+      mergedHooks[event].push(...entries);
+    }
+
+    return {
+      ...existing,
+      hooks: mergedHooks,
+    };
   }
 
   private generateRunner(): string {
@@ -165,7 +300,7 @@ class CodexAdapter extends BaseAdapter {
  */
 import { loadConfig, HookEngine } from "@itz4blitz/ai-tools-hooks";
 
-const PROJECT_ROOT = "${resolve(process.cwd())}";
+const PROJECT_ROOT = ${JSON.stringify(resolve(process.cwd()))};
 process.chdir(PROJECT_ROOT);
 
 async function readStdin() {
@@ -187,6 +322,11 @@ function getMcpIdentity(toolName) {
   };
 }
 
+function extractCommand(toolInput) {
+  const raw = toolInput.command ?? toolInput.cmd ?? "";
+  return Array.isArray(raw) ? raw.join(" ") : String(raw);
+}
+
 function resolvePreToolUse(toolName, toolInput, timestamp, metadata) {
   const mcp = getMcpIdentity(toolName);
   if (mcp) {
@@ -202,10 +342,14 @@ function resolvePreToolUse(toolName, toolInput, timestamp, metadata) {
 
   switch (toolName) {
     case "Bash":
+    case "shell":
+    case "exec_command":
+    case "shell_command":
+    case "local_shell":
       return {
         type: "shell:before",
-        command: toolInput.command ?? "",
-        cwd: toolInput.cwd ?? process.cwd(),
+        command: extractCommand(toolInput),
+        cwd: toolInput.cwd ?? toolInput.workdir ?? process.cwd(),
         timestamp,
         metadata,
       };
@@ -262,11 +406,15 @@ function resolvePostToolUse(toolName, toolInput, toolResponse, timestamp, metada
 
   switch (toolName) {
     case "Bash":
+    case "shell":
+    case "exec_command":
+    case "shell_command":
+    case "local_shell":
       return {
         type: "shell:after",
-        command: toolInput.command ?? "",
-        cwd: toolInput.cwd ?? process.cwd(),
-        exitCode: toolResponse.exitCode ?? 0,
+        command: extractCommand(toolInput),
+        cwd: toolInput.cwd ?? toolInput.workdir ?? process.cwd(),
+        exitCode: toolResponse.exitCode ?? toolResponse.exit_code ?? 0,
         stdout: toolResponse.stdout ?? "",
         stderr: toolResponse.stderr ?? "",
         duration: 0,
@@ -299,6 +447,16 @@ function buildEvents(hookEventName, input, timestamp, metadata) {
           metadata,
         },
       ];
+    case "SessionEnd":
+      return [
+        {
+          type: "session:end",
+          tool: "codex",
+          duration: 0,
+          timestamp,
+          metadata,
+        },
+      ];
     case "UserPromptSubmit":
       return [
         {
@@ -320,27 +478,20 @@ function buildEvents(hookEventName, input, timestamp, metadata) {
           metadata,
         ),
       ];
-    case "Stop": {
-      const events = [];
+    case "Stop":
       if (typeof input.last_assistant_message === "string" && input.last_assistant_message.length > 0) {
-        events.push({
-          type: "prompt:response",
-          response: input.last_assistant_message,
-          model: input.model ?? "codex",
-          tokens: { input: 0, output: 0 },
-          timestamp,
-          metadata,
-        });
+        return [
+          {
+            type: "prompt:response",
+            response: input.last_assistant_message,
+            model: input.model ?? "codex",
+            tokens: { input: 0, output: 0 },
+            timestamp,
+            metadata,
+          },
+        ];
       }
-      events.push({
-        type: "session:end",
-        tool: "codex",
-        duration: 0,
-        timestamp,
-        metadata,
-      });
-      return events;
-    }
+      return [];
     default:
       return [];
   }
