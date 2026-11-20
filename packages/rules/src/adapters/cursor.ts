@@ -16,25 +16,59 @@ function unquote(value: string): string {
   return trimmed;
 }
 
+function splitRespectingQuotesAndBraces(input: string): string[] {
+  const items: string[] = [];
+  let current = "";
+  let quote: '"' | "'" | null = null;
+  let braceDepth = 0;
+
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i] ?? "";
+    if (quote) {
+      if (ch === quote && input[i - 1] !== "\\") {
+        quote = null;
+      }
+      current += ch;
+      continue;
+    }
+
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      current += ch;
+    } else if (ch === "{") {
+      braceDepth++;
+      current += ch;
+    } else if (ch === "}") {
+      if (braceDepth > 0) braceDepth--;
+      current += ch;
+    } else if (ch === "," && braceDepth === 0) {
+      const cleaned = unquote(current);
+      if (cleaned.length > 0) items.push(cleaned);
+      current = "";
+    } else {
+      current += ch;
+    }
+  }
+
+  const cleaned = unquote(current);
+  if (cleaned.length > 0) items.push(cleaned);
+  return items;
+}
+
 function parseInlineGlobs(rawValue: string): string[] {
   const trimmed = rawValue.trim();
   if (!trimmed) return [];
 
-  // Inline YAML array: ["*.ts", "*.tsx"] or ['*.ts']
+  // Inline YAML array: ["*.ts", "src/**/*.{ts,tsx}"] or ['*.ts']
   if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
     const inner = trimmed.slice(1, -1).trim();
     if (!inner) return [];
-    return inner
-      .split(",")
-      .map((item) => unquote(item))
-      .filter((item) => item.length > 0);
+    return splitRespectingQuotesAndBraces(inner);
   }
 
-  // Comma-separated or single glob: "*.ts, *.tsx" or "src/**/*.ts"
-  return trimmed
-    .split(",")
-    .map((item) => unquote(item))
-    .filter((item) => item.length > 0);
+  // Unquote a single outer-quoted scalar such as "*.ts, *.tsx" before splitting
+  const unwrapped = unquote(trimmed);
+  return splitRespectingQuotesAndBraces(unwrapped);
 }
 
 async function collectMdcFiles(currentDir: string): Promise<string[]> {

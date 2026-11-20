@@ -106,11 +106,11 @@ describe("CursorAgentAdapter", () => {
       });
     });
 
-    it("parses CRLF frontmatter cleanly", async () => {
+    it("parses CRLF frontmatter cleanly and ignores non-tools YAML lists", async () => {
       await mkdir(join(tempDir, ".cursor/agents"), { recursive: true });
       await writeFile(
         join(tempDir, ".cursor/agents/bg.md"),
-        "---\r\nname: Background Runner\r\ndescription: Runs tasks\r\nmodel: fast\r\nreadonly: true\r\nis_background: true\r\n---\r\n\r\nRun in background.\r\n",
+        "---\r\nname: Background Runner\r\ndescription: Runs tasks\r\nmodel: fast\r\nreadonly: true\r\nis_background: true\r\ntags:\r\n  - nightly\r\ntools:\r\n  - Read\r\n---\r\n\r\nRun in background.\r\n",
         "utf-8",
       );
 
@@ -123,6 +123,7 @@ describe("CursorAgentAdapter", () => {
         model: "fast",
         readonly: true,
         isBackground: true,
+        tools: ["Read"],
         instructions: "Run in background.",
       });
     });

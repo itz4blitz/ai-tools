@@ -61,14 +61,16 @@ function parseCursorAgent(id: string, raw: string): CursorAgentDefinition {
     for (const line of lines) {
       const trimmed = line.trim();
       if (trimmed.startsWith("- ")) {
-        currentArray.push(unquote(trimmed.slice(2)));
+        if (currentKey === "tools") {
+          currentArray.push(unquote(trimmed.slice(2)));
+        }
         continue;
       }
 
       if (currentKey === "tools" && currentArray.length > 0) {
         agent.tools = currentArray;
-        currentArray = [];
       }
+      currentArray = [];
 
       const colonIdx = line.indexOf(":");
       if (colonIdx !== -1) {

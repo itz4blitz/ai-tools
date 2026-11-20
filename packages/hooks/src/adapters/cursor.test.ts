@@ -302,13 +302,19 @@ describe("CursorAdapter", () => {
 
           await writeFile(
             shimFile,
-            `import { writeFileSync } from "node:fs";
+            `import { existsSync, readFileSync, writeFileSync } from "node:fs";
 export async function loadConfig() {
   return { hooks: [] };
 }
 export class HookEngine {
   async emit(event, toolInfo) {
-    writeFileSync(${JSON.stringify(captureFile)}, JSON.stringify({ event, toolInfo }), "utf-8");
+    const existing = existsSync(${JSON.stringify(captureFile)})
+      ? JSON.parse(readFileSync(${JSON.stringify(captureFile)}, "utf-8"))
+      : { events: [], toolInfo };
+    existing.events.push(event);
+    existing.event = existing.events[0];
+    existing.toolInfo = toolInfo;
+    writeFileSync(${JSON.stringify(captureFile)}, JSON.stringify(existing), "utf-8");
     if (process.env.TEST_BLOCK_REASON) {
       return [{ blocked: true, reason: process.env.TEST_BLOCK_REASON }];
     }
@@ -330,6 +336,12 @@ export class HookEngine {
             payload: Record<string, unknown>,
             blockReason?: string,
           ) => {
+            if (existsSync(captureFile)) {
+              execFileSync(process.execPath, [
+                "-e",
+                `require("node:fs").rmSync(${JSON.stringify(captureFile)}, { force: true })`,
+              ]);
+            }
             const stdout = execFileSync(process.execPath, [runnableFile, eventName], {
               input: JSON.stringify(payload),
               encoding: "utf-8",
@@ -347,7 +359,11 @@ export class HookEngine {
                 ],
                 { encoding: "utf-8" },
               ),
-            ) as { event: Record<string, unknown>; toolInfo: Record<string, unknown> };
+            ) as {
+              event: Record<string, unknown>;
+              events: Array<Record<string, unknown>>;
+              toolInfo: Record<string, unknown>;
+            };
             return { stdout: stdout.trim() ? JSON.parse(stdout) : null, captured };
           };
 
@@ -414,15 +430,16 @@ export class HookEngine {
           expect(toolBefore.captured.event.input).toEqual({ file_path: "src/a.ts" });
           expect(toolBefore.stdout).toEqual({ permission: "allow" });
 
-          // 6. afterFileEdit with file_path & edits
+          // 6. afterFileEdit with file_path & edits emits both file:edit and file:write
           const fileEdit = invoke("afterFileEdit", {
             file_path: "src/app.ts",
             edits: [{ old_string: "foo", new_string: "bar" }],
           });
-          expect(fileEdit.captured.event.type).toBe("file:edit");
+          expect(fileEdit.captured.events.map((e) => e.type)).toEqual(["file:edit", "file:write"]);
           expect(fileEdit.captured.event.path).toBe("src/app.ts");
           expect(fileEdit.captured.event.oldContent).toBe("foo");
           expect(fileEdit.captured.event.newContent).toBe("bar");
+          expect(fileEdit.captured.events[1]?.content).toBe("bar");
           expect(fileEdit.stdout).toBeNull();
 
           // 7. sessionStart with cwd & afterAgentResponse with text

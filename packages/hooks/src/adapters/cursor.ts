@@ -401,112 +401,132 @@ async function run() {
   const timestamp = Date.now();
   const metadata = {};
 
-  let event;
+  let events = [];
   switch (hookEventName) {
     case "sessionStart":
-      event = {
-        type: "session:start",
-        tool: "cursor",
-        version: "1.0",
-        workingDirectory: input.cwd ?? (Array.isArray(input.workspace_roots) ? input.workspace_roots[0] : undefined) ?? process.cwd(),
-        timestamp,
-        metadata,
-      };
+      events = [
+        {
+          type: "session:start",
+          tool: "cursor",
+          version: "1.0",
+          workingDirectory: input.cwd ?? (Array.isArray(input.workspace_roots) ? input.workspace_roots[0] : undefined) ?? process.cwd(),
+          timestamp,
+          metadata,
+        },
+      ];
       break;
     case "sessionEnd":
     case "stop":
-      event = {
-        type: "session:end",
-        tool: "cursor",
-        duration: input.duration_ms ?? input.duration ?? 0,
-        timestamp,
-        metadata,
-      };
+      events = [
+        {
+          type: "session:end",
+          tool: "cursor",
+          duration: input.duration_ms ?? input.duration ?? 0,
+          timestamp,
+          metadata,
+        },
+      ];
       break;
     case "beforeSubmitPrompt":
-      event = { type: "prompt:submit", prompt: input.prompt ?? "", timestamp, metadata };
+      events = [{ type: "prompt:submit", prompt: input.prompt ?? "", timestamp, metadata }];
       break;
     case "afterAgentResponse":
-      event = {
-        type: "prompt:response",
-        response: input.text ?? input.response ?? "",
-        model: input.model ?? "",
-        tokens: { input: 0, output: 0 },
-        timestamp,
-        metadata,
-      };
+      events = [
+        {
+          type: "prompt:response",
+          response: input.text ?? input.response ?? "",
+          model: input.model ?? "",
+          tokens: { input: 0, output: 0 },
+          timestamp,
+          metadata,
+        },
+      ];
       break;
     case "preToolUse":
-      event = {
-        type: "tool:before",
-        toolName: input.tool_name ?? input.toolName ?? "",
-        input: parseObject(input.tool_input ?? input.arguments ?? input.input),
-        timestamp,
-        metadata,
-      };
+      events = [
+        {
+          type: "tool:before",
+          toolName: input.tool_name ?? input.toolName ?? "",
+          input: parseObject(input.tool_input ?? input.arguments ?? input.input),
+          timestamp,
+          metadata,
+        },
+      ];
       break;
     case "postToolUse":
-      event = {
-        type: "tool:after",
-        toolName: input.tool_name ?? input.toolName ?? "",
-        input: parseObject(input.tool_input ?? input.arguments ?? input.input),
-        output: parseMaybeJson(input.tool_output ?? input.output),
-        duration: input.duration_ms ?? input.duration ?? 0,
-        timestamp,
-        metadata,
-      };
+      events = [
+        {
+          type: "tool:after",
+          toolName: input.tool_name ?? input.toolName ?? "",
+          input: parseObject(input.tool_input ?? input.arguments ?? input.input),
+          output: parseMaybeJson(input.tool_output ?? input.output),
+          duration: input.duration_ms ?? input.duration ?? 0,
+          timestamp,
+          metadata,
+        },
+      ];
       break;
     case "beforeShellExecution":
-      event = {
-        type: "shell:before",
-        command: input.command ?? "",
-        cwd: input.cwd ?? process.cwd(),
-        timestamp,
-        metadata,
-      };
+      events = [
+        {
+          type: "shell:before",
+          command: input.command ?? "",
+          cwd: input.cwd ?? process.cwd(),
+          timestamp,
+          metadata,
+        },
+      ];
       break;
     case "afterShellExecution":
-      event = {
-        type: "shell:after",
-        command: input.command ?? "",
-        cwd: input.cwd ?? process.cwd(),
-        exitCode: input.exit_code ?? input.exitCode ?? 0,
-        stdout: input.output ?? input.stdout ?? "",
-        stderr: input.stderr ?? "",
-        duration: input.duration_ms ?? input.duration ?? 0,
-        timestamp,
-        metadata,
-      };
+      events = [
+        {
+          type: "shell:after",
+          command: input.command ?? "",
+          cwd: input.cwd ?? process.cwd(),
+          exitCode: input.exit_code ?? input.exitCode ?? 0,
+          stdout: input.output ?? input.stdout ?? "",
+          stderr: input.stderr ?? "",
+          duration: input.duration_ms ?? input.duration ?? 0,
+          timestamp,
+          metadata,
+        },
+      ];
       break;
     case "beforeMCPExecution":
-      event = {
-        type: "mcp:before",
-        server: input.server_name ?? input.server ?? "",
-        method: input.tool_name ?? input.method ?? "",
-        params: parseObject(input.tool_input ?? input.arguments ?? input.params),
-        timestamp,
-        metadata,
-      };
+      events = [
+        {
+          type: "mcp:before",
+          server: input.server_name ?? input.server ?? "",
+          method: input.tool_name ?? input.method ?? "",
+          params: parseObject(input.tool_input ?? input.arguments ?? input.params),
+          timestamp,
+          metadata,
+        },
+      ];
       break;
     case "afterMCPExecution":
-      event = {
-        type: "mcp:after",
-        server: input.server_name ?? input.server ?? "",
-        method: input.tool_name ?? input.method ?? "",
-        params: parseObject(input.tool_input ?? input.arguments ?? input.params),
-        result: parseMaybeJson(input.result_json ?? input.result),
-        duration: input.duration_ms ?? input.duration ?? 0,
-        timestamp,
-        metadata,
-      };
+      events = [
+        {
+          type: "mcp:after",
+          server: input.server_name ?? input.server ?? "",
+          method: input.tool_name ?? input.method ?? "",
+          params: parseObject(input.tool_input ?? input.arguments ?? input.params),
+          result: parseMaybeJson(input.result_json ?? input.result),
+          duration: input.duration_ms ?? input.duration ?? 0,
+          timestamp,
+          metadata,
+        },
+      ];
       break;
     case "beforeReadFile":
-      event = {
-        type: "file:read",
-        path: input.file_path ?? input.path ?? "",
-        timestamp,
-        metadata,
-      };
+      events = [
+        {
+          type: "file:read",
+          path: input.file_path ?? input.path ?? "",
+          timestamp,
+          metadata,
+        },
+      ];
       break;
     case "afterFileEdit": {
       const edits = Array.isArray(input.edits) ? input.edits : [];
@@ -515,21 +535,35 @@ async function run() {
       if (edits.length > 0) {
         metadata.edits = edits;
       }
-      event = {
-        type: "file:edit",
-        path: input.file_path ?? input.path ?? "",
-        oldContent,
-        newContent,
-        timestamp,
-        metadata,
-      };
+      const filePath = input.file_path ?? input.path ?? "";
+      events = [
+        {
+          type: "file:edit",
+          path: filePath,
+          oldContent,
+          newContent,
+          timestamp,
+          metadata,
+        },
+        {
+          type: "file:write",
+          path: filePath,
+          content: newContent,
+          timestamp,
+          metadata,
+        },
+      ];
       break;
     }
     default:
       process.exit(0);
   }
 
-  const results = await engine.emit(event, toolInfo);
+  const results = [];
+  for (const event of events) {
+    const emitted = await engine.emit(event, toolInfo);
+    results.push(...emitted);
+  }
   const blocked = results.find((r) => r.blocked);
 
   if (hookEventName === "beforeSubmitPrompt") {

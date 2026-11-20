@@ -46,6 +46,12 @@ function extractText(content: string | CursorContentBlock[] | undefined): string
     .join("\n");
 }
 
+function toValidIso(value: number | string | undefined, fallback: string): string {
+  if (value === undefined || value === null || value === "") return fallback;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? fallback : date.toISOString();
+}
+
 function getCursorGlobalStateDbPath(): string {
   const home = homedir();
   switch (process.platform) {
@@ -237,32 +243,34 @@ class CursorSessionAdapter extends BaseSessionAdapter {
 
       const sessions: UnifiedSession[] = [];
       for (const row of rows) {
-        if (typeof row.value !== "string") continue;
-        const data = safeJsonParse<CursorSession>(row.value, {});
-        const rawMessages = data.conversation ?? data.messages ?? [];
-        const messages = this.extractMessages(rawMessages);
-        if (messages.length === 0) continue;
+        try {
+          if (typeof row.value !== "string") continue;
+          const data = safeJsonParse<CursorSession>(row.value, {});
+          const rawMessages = data.conversation ?? data.messages ?? [];
+          const messages = this.extractMessages(rawMessages);
+          if (messages.length === 0) continue;
 
-        const fallbackId =
-          typeof row.key === "string" ? row.key.replace(/^composerData:/, "") : "composer";
-        const sessionId = `cursor-${data.composerId ?? data.id ?? fallbackId}`;
-        const nowIso = new Date().toISOString();
-        const startedAt = data.createdAt ? new Date(data.createdAt).toISOString() : nowIso;
-        const updatedAt = data.lastUpdatedAt
-          ? new Date(data.lastUpdatedAt).toISOString()
-          : startedAt;
-        const title = this.resolveSessionTitle(data.name ?? data.title, messages);
+          const fallbackId =
+            typeof row.key === "string" ? row.key.replace(/^composerData:/, "") : "composer";
+          const sessionId = `cursor-${data.composerId ?? data.id ?? fallbackId}`;
+          const nowIso = new Date().toISOString();
+          const startedAt = toValidIso(data.createdAt, nowIso);
+          const updatedAt = toValidIso(data.lastUpdatedAt, startedAt);
+          const title = this.resolveSessionTitle(data.name ?? data.title, messages);
 
-        sessions.push({
-          id: sessionId,
-          tool: this.id,
-          toolName: this.name,
-          title,
-          startedAt,
-          updatedAt,
-          messageCount: messages.length,
-          messages,
-        });
+          sessions.push({
+            id: sessionId,
+            tool: this.id,
+            toolName: this.name,
+            title,
+            startedAt,
+            updatedAt,
+            messageCount: messages.length,
+            messages,
+          });
+        } catch {
+          // Skip malformed row without aborting remaining sessions
+        }
       }
 
       return sessions;

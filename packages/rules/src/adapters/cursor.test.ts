@@ -170,7 +170,15 @@ describe("CursorRuleAdapter", () => {
         );
         await writeFile(
           join(dir, ".cursor/rules/inline-array.mdc"),
-          '---\r\ndescription: Array globs\r\nglobs: ["*.ts", "src/**/*.tsx"]\r\nalwaysApply: false\r\n---\r\n\r\nArray body.\r\n',
+          '---\r\ndescription: Array globs\r\nglobs: ["*.ts", "src/**/*.{ts,tsx}"]\r\nalwaysApply: false\r\n---\r\n\r\nArray body.\r\n',
+        );
+        await writeFile(
+          join(dir, ".cursor/rules/quoted-comma.mdc"),
+          '---\r\ndescription: Quoted comma globs\r\nglobs: "*.ts, src/**/*.{ts,tsx}"\r\nalwaysApply: false\r\n---\r\n\r\nQuoted comma body.\r\n',
+        );
+        await writeFile(
+          join(dir, ".cursor/rules/empty-array.mdc"),
+          "---\ndescription: Empty globs\nglobs: []\nalwaysApply: false\n---\n\nEmpty globs body.\n",
         );
 
         const result = await adapter.import(dir);
@@ -182,9 +190,14 @@ describe("CursorRuleAdapter", () => {
         expect(byId.get("comma")?.content).toBe("Comma body.");
         expect(byId.get("inline-array")?.scope).toEqual({
           type: "glob",
-          patterns: ["*.ts", "src/**/*.tsx"],
+          patterns: ["*.ts", "src/**/*.{ts,tsx}"],
         });
         expect(byId.get("inline-array")?.content).toBe("Array body.");
+        expect(byId.get("quoted-comma")?.scope).toEqual({
+          type: "glob",
+          patterns: ["*.ts", "src/**/*.{ts,tsx}"],
+        });
+        expect(byId.get("empty-array")?.scope).toEqual({ type: "manual" });
       });
     });
 
