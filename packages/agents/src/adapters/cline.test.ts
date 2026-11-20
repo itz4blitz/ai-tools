@@ -1,39 +1,14 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import type { AgentDefinition } from "../types/index.js";
-
-vi.mock("./index.js", () => {
-  const registry = { register: vi.fn() };
-  abstract class BaseAgentAdapter {
-    abstract readonly id: string;
-    abstract readonly name: string;
-    abstract readonly nativeSupport: boolean;
-    abstract readonly configDir: string;
-    abstract generate(agents: AgentDefinition[]): Promise<unknown[]>;
-    abstract import(cwd?: string): Promise<AgentDefinition[]>;
-    async detect() {
-      return false;
-    }
-    async install() {}
-    async uninstall() {}
-  }
-  return { BaseAgentAdapter, registry };
-});
-
-vi.mock("node:fs", () => ({
-  existsSync: vi.fn(() => false),
-}));
-
-vi.mock("node:fs/promises", () => ({
-  readFile: vi.fn(),
-  readdir: vi.fn(),
-}));
-
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { existsSync } from "node:fs";
-import { readFile, readdir } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { AgentDefinition } from "../types/index.js";
 import { ClineAgentAdapter } from "./cline.js";
 
 describe("ClineAgentAdapter", () => {
-  let adapter: ClineAgentAdapter;
+  let adapter: InstanceType<typeof ClineAgentAdapter>;
+  let tempDir: string;
 
   const testAgent: AgentDefinition = {
     id: "reviewer",
@@ -42,75 +17,50 @@ describe("ClineAgentAdapter", () => {
     instructions: "Review all code changes carefully.",
   };
 
-  beforeEach(() => {
-    vi.clearAllMocks();
+  beforeEach(async () => {
     adapter = new ClineAgentAdapter();
+    tempDir = await mkdtemp(join(tmpdir(), "ai-tools-cline-agents-"));
+  });
+
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
   });
 
   describe("metadata", () => {
-    it("has correct id", () => {
+    it("targets .clinerules/workflows", () => {
       expect(adapter.id).toBe("cline");
-    });
-
-    it("has correct name", () => {
       expect(adapter.name).toBe("Cline");
-    });
-
-    it("has native support", () => {
       expect(adapter.nativeSupport).toBe(true);
-    });
-
-    it("has correct configDir", () => {
-      expect(adapter.configDir).toBe(".cline/agents");
+      expect(adapter.configDir).toBe(".clinerules/workflows");
     });
   });
 
-  describe("generate", () => {
+  describe("generate, install, and import", () => {
     it("returns empty array for no agents", async () => {
-      const files = await adapter.generate([]);
-      expect(files).toEqual([]);
+      expect(await adapter.generate([])).toEqual([]);
     });
 
-    it("generates file at correct path", async () => {
+    it("roundtrips agents through .clinerules/workflows/*.md", async () => {
       const files = await adapter.generate([testAgent]);
-      expect(files[0]!.path).toBe(".cline/agents/reviewer.md");
-    });
-
-    it("generates file with md format", async () => {
-      const files = await adapter.generate([testAgent]);
+      expect(files).toHaveLength(1);
+      expect(files[0]!.path).toBe(".clinerules/workflows/reviewer.md");
       expect(files[0]!.format).toBe("md");
-    });
-
-    it("includes frontmatter and body", async () => {
-      const files = await adapter.generate([testAgent]);
       expect(files[0]!.content).toContain("---");
       expect(files[0]!.content).toContain("# Code Reviewer");
-    });
-  });
 
-  describe("import", () => {
-    it("returns empty array when config dir does not exist", async () => {
-      vi.mocked(existsSync).mockReturnValue(false);
-      const agents = await adapter.import("/project");
-      expect(agents).toEqual([]);
-    });
+      await adapter.install(files, tempDir);
+      expect(existsSync(join(tempDir, ".clinerules", "workflows", "reviewer.md"))).toBe(true);
 
-    it("imports without cwd argument", async () => {
-      vi.mocked(existsSync).mockReturnValue(false);
-      const agents = await adapter.import();
-      expect(agents).toEqual([]);
+      const imported = await adapter.import(tempDir);
+      expect(imported).toHaveLength(1);
+      expect(imported[0]!.id).toBe("reviewer");
+      expect(imported[0]!.name).toBe("Code Reviewer");
+      expect(imported[0]!.description).toBe("Reviews code for quality");
+      expect(imported[0]!.instructions).toBe("Review all code changes carefully.");
     });
 
-    it("parses agent from markdown file", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir).mockResolvedValue(["reviewer.md"] as unknown as never);
-      vi.mocked(readFile).mockResolvedValue(
-        "---\ndescription: Reviews code\n---\n\n# Code Reviewer\n\nReview carefully.\n",
-      );
-
-      const agents = await adapter.import("/project");
-      expect(agents).toHaveLength(1);
-      expect(agents[0]!.id).toBe("reviewer");
+    it("returns empty array when workflows dir does not exist", async () => {
+      expect(await adapter.import(tempDir)).toEqual([]);
     });
   });
 });

@@ -49,6 +49,10 @@ describe("KNOWN_PLUGIN_HOSTS", () => {
     expect(KNOWN_PLUGIN_HOSTS.zcode?.nativeEngineSupport.hooks).toBe(true);
   });
 
+  it("marks cline as hybrid because it ships as both VS Code extension and CLI", () => {
+    expect(KNOWN_PLUGIN_HOSTS.cline?.kind).toBe("hybrid");
+  });
+
   it("fills every PluginEngine key on each host", () => {
     for (const host of Object.values(KNOWN_PLUGIN_HOSTS)) {
       for (const engine of ENGINES) {
