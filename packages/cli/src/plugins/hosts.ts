@@ -111,11 +111,12 @@ export const KNOWN_PLUGIN_HOSTS: Record<string, PluginHostInfo> = {
   kiro: {
     id: "kiro",
     name: "Kiro",
-    kind: "desktop",
+    kind: "hybrid",
     nativeEngineSupport: { mcp: true, skills: true, rules: true, agents: true, hooks: true },
     supportsInteractiveApps: false,
-    supportsNativeBundles: false,
-    notes: "Kiro exposes multiple config surfaces that ai-tools can target directly.",
+    supportsNativeBundles: true,
+    notes:
+      "Kiro (IDE and CLI) reads project/user `.kiro/settings/mcp.json`, `.kiro/hooks/ai-tools-hooks.json` (v1), `.kiro/skills/<id>/SKILL.md`, `.kiro/steering/*.md`, `.kiro/agents/*.md|json`, and CLI V3 sessions under `$KIRO_HOME/sessions/cli`.",
   },
   cline: {
     id: "cline",

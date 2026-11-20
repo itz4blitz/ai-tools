@@ -49,6 +49,12 @@ describe("KNOWN_PLUGIN_HOSTS", () => {
     expect(KNOWN_PLUGIN_HOSTS.zcode?.nativeEngineSupport.hooks).toBe(true);
   });
 
+  it("models kiro as a hybrid host with native bundles", () => {
+    expect(KNOWN_PLUGIN_HOSTS.kiro?.kind).toBe("hybrid");
+    expect(KNOWN_PLUGIN_HOSTS.kiro?.supportsNativeBundles).toBe(true);
+    expect(KNOWN_PLUGIN_HOSTS.kiro?.notes).toContain(".kiro/settings/mcp.json");
+  });
+
   it("fills every PluginEngine key on each host", () => {
     for (const host of Object.values(KNOWN_PLUGIN_HOSTS)) {
       for (const engine of ENGINES) {
