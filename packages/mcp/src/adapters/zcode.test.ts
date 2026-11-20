@@ -1,50 +1,88 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { homedir } from "node:os";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { MCPServerDefinition } from "../types/index.js";
+
+const { mockHome } = vi.hoisted(() => ({ mockHome: { value: "" } }));
 
 vi.mock("./registry.js", () => ({
   registry: { register: vi.fn() },
 }));
 
-vi.mock("node:fs", () => ({
-  existsSync: vi.fn(() => false),
+vi.mock("node:os", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:os")>();
+  return {
+    ...actual,
+    homedir: () => mockHome.value || actual.homedir(),
+  };
+});
+
+vi.mock("node:child_process", () => ({
+  execFile: vi.fn((_cmd: string, _args: string[], cb: (error: Error | null) => void) => {
+    cb(new Error("not found"));
+  }),
 }));
 
-vi.mock("node:fs/promises", () => ({
-  readFile: vi.fn(),
-  writeFile: vi.fn(),
-  mkdir: vi.fn(),
-  rm: vi.fn(),
-}));
-
-import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
 import { ZcodeMCPAdapter } from "./zcode.js";
-import type { MCPServerDefinition } from "../types/index.js";
 
 describe("ZcodeMCPAdapter", () => {
   let adapter: ZcodeMCPAdapter;
+  let tmp: string;
+  let home: string;
+
   const stdio: MCPServerDefinition = {
     id: "github",
     name: "github",
-    transport: { type: "stdio", command: "/home/blitz/.local/bin/gh-mcp", args: [] },
+    transport: {
+      type: "stdio",
+      command: "npx",
+      args: ["-y", "@modelcontextprotocol/server-github"],
+    },
   };
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
+    tmp = await mkdtemp(join(tmpdir(), "zcode-mcp-"));
+    home = await mkdtemp(join(tmpdir(), "zcode-mcp-home-"));
+    mockHome.value = home;
     adapter = new ZcodeMCPAdapter();
   });
 
-  it("uses ZCode user and project paths", () => {
+  afterEach(async () => {
+    mockHome.value = "";
+    await rm(tmp, { recursive: true, force: true });
+    await rm(home, { recursive: true, force: true });
+  });
+
+  it("uses cross-platform ZCode user and project paths", () => {
     expect(adapter.id).toBe("zcode");
     expect(adapter.name).toBe("ZCode");
     expect(adapter.configPath).toBe(".zcode/config.json");
-    expect(adapter.userConfigPath).toBe(`${homedir()}/.zcode/cli/config.json`);
+    expect(adapter.userConfigPath).toBe(join(home, ".zcode", "cli", "config.json"));
     expect(adapter.command).toBe("zcode");
   });
 
-  it("detects ZCode from the user config even without a zcode binary", async () => {
-    vi.mocked(existsSync).mockImplementation((path) => String(path).endsWith("cli/config.json"));
-    expect(await adapter.detect("/tmp/empty")).toBe(true);
+  it("detects ZCode from user config, ~/.zcode, project .zcode, or zcode binary", async () => {
+    expect(await adapter.detect(tmp)).toBe(false);
+
+    await mkdir(join(home, ".zcode", "cli"), { recursive: true });
+    await writeFile(join(home, ".zcode", "cli", "config.json"), "{}\n", "utf-8");
+    expect(await adapter.detect(tmp)).toBe(true);
+
+    await rm(join(home, ".zcode"), { recursive: true, force: true });
+    expect(await adapter.detect(tmp)).toBe(false);
+
+    await mkdir(join(tmp, ".zcode"), { recursive: true });
+    expect(await adapter.detect(tmp)).toBe(true);
+
+    await rm(join(tmp, ".zcode"), { recursive: true, force: true });
+    vi.mocked(execFile).mockImplementation(((_cmd, _args, cb) => {
+      (cb as (error: Error | null) => void)(null);
+    }) as typeof execFile);
+    expect(await adapter.detect(tmp)).toBe(true);
   });
 
   it("generates project { mcp: { servers } } JSON, not mcpServers", async () => {
@@ -53,9 +91,11 @@ describe("ZcodeMCPAdapter", () => {
     const parsed = JSON.parse(files[0]!.content) as {
       mcp: { servers: Record<string, { command: string; type: string; args: string[] }> };
     };
-    expect(parsed.mcp.servers.github?.type).toBe("stdio");
-    expect(parsed.mcp.servers.github?.command).toBe("/home/blitz/.local/bin/gh-mcp");
-    expect(parsed.mcp.servers.github?.args).toEqual([]);
+    expect(parsed.mcp.servers.github).toEqual({
+      type: "stdio",
+      command: "npx",
+      args: ["-y", "@modelcontextprotocol/server-github"],
+    });
     expect(files[0]!.content).not.toContain("mcpServers");
   });
 
@@ -66,8 +106,8 @@ describe("ZcodeMCPAdapter", () => {
         name: "linear",
         transport: {
           type: "http",
-          url: "https://mcp.linear.app/mcp",
-          headers: { Authorization: "Bearer x" },
+          url: "https://mcp.example.com/mcp",
+          headers: { Authorization: "Bearer token" },
         },
       },
       {
@@ -81,53 +121,173 @@ describe("ZcodeMCPAdapter", () => {
     };
     expect(parsed.mcp.servers.linear).toEqual({
       type: "http",
-      url: "https://mcp.linear.app/mcp",
-      headers: { Authorization: "Bearer x" },
+      url: "https://mcp.example.com/mcp",
+      headers: { Authorization: "Bearer token" },
     });
-    expect(parsed.mcp.servers.events).toMatchObject({
+    expect(parsed.mcp.servers.events).toEqual({
       type: "sse",
       url: "http://localhost:3000/sse",
     });
   });
 
   it("imports user mcp.servers without clobbering other config keys", async () => {
-    vi.mocked(existsSync).mockImplementation((path) => String(path).endsWith("config.json"));
-    vi.mocked(readFile).mockResolvedValue(
+    await mkdir(join(home, ".zcode", "cli"), { recursive: true });
+    await writeFile(
+      join(home, ".zcode", "cli", "config.json"),
       JSON.stringify({
         model: "keep-me",
         mcp: {
           servers: {
-            palamhealth: {
+            acme: {
               type: "stdio",
-              command: "/home/blitz/.local/bin/palamhealth-mcp-stdio",
-              args: [],
-              env: { OP_ACCOUNT: "palamhealth.1password.com" },
+              command: "acme-mcp",
+              args: ["--stdio"],
+              env: { ACME_ENV: "dev" },
             },
           },
         },
       }),
+      "utf-8",
     );
+
     const servers = await adapter.importUser();
-    expect(servers).toHaveLength(1);
-    expect(servers[0]?.id).toBe("palamhealth");
-    expect(servers[0]?.transport.type).toBe("stdio");
+    expect(servers).toEqual([
+      {
+        id: "acme",
+        name: "acme",
+        transport: {
+          type: "stdio",
+          command: "acme-mcp",
+          args: ["--stdio"],
+          env: { ACME_ENV: "dev" },
+        },
+      },
+    ]);
   });
 
-  it("merges generated servers into existing user config.json", async () => {
-    vi.mocked(existsSync).mockReturnValue(true);
-    vi.mocked(readFile).mockResolvedValue(
-      JSON.stringify({ model: "keep-me", mcp: { servers: {} } }),
+  it("merges generated servers into existing config.json without dropping hooks or model", async () => {
+    await mkdir(join(tmp, ".zcode"), { recursive: true });
+    await writeFile(
+      join(tmp, ".zcode", "config.json"),
+      JSON.stringify({
+        model: "keep-me",
+        hooks: { enabled: true, events: {} },
+        mcp: {
+          servers: {
+            existing: { type: "http", url: "https://existing.example.com/mcp" },
+          },
+        },
+      }),
+      "utf-8",
     );
+
     const files = await adapter.generate([stdio]);
-    files[0]!.path = `${homedir()}/.zcode/cli/config.json`;
-    await adapter.install(files, "/tmp");
-    const written = JSON.parse(String(vi.mocked(writeFile).mock.calls[0]?.[1])) as {
+    await adapter.install(files, tmp);
+
+    const written = JSON.parse(await readFile(join(tmp, ".zcode", "config.json"), "utf-8")) as {
       model: string;
-      mcp: { servers: Record<string, { command: string; type: string }> };
+      hooks: { enabled: boolean };
+      mcp: { servers: Record<string, { command?: string; url?: string }> };
     };
     expect(written.model).toBe("keep-me");
-    expect(written.mcp.servers.github?.type).toBe("stdio");
-    expect(written.mcp.servers.github?.command).toBe("/home/blitz/.local/bin/gh-mcp");
-    expect(vi.mocked(mkdir)).toHaveBeenCalled();
+    expect(written.hooks.enabled).toBe(true);
+    expect(written.mcp.servers.existing?.url).toBe("https://existing.example.com/mcp");
+    expect(written.mcp.servers.github?.command).toBe("npx");
+  });
+
+  it("guards against malformed JSON and null/non-object server entries", async () => {
+    await mkdir(join(tmp, ".zcode"), { recursive: true });
+    await writeFile(join(tmp, ".zcode", "config.json"), "{broken-json", "utf-8");
+    expect(await adapter.import(tmp)).toEqual([]);
+
+    await writeFile(join(tmp, ".zcode", "config.json"), "[1, 2, 3]", "utf-8");
+    expect(await adapter.import(tmp)).toEqual([]);
+
+    await writeFile(
+      join(tmp, ".zcode", "config.json"),
+      JSON.stringify({
+        mcp: {
+          servers: {
+            nullEntry: null,
+            arrayEntry: ["bad"],
+            primitiveEntry: "bad",
+            emptyEntry: {},
+            validEntry: {
+              type: "stdio",
+              command: "node",
+              args: ["server.js", 123],
+              env: { OK: "1", BAD: 2 },
+            },
+          },
+        },
+      }),
+      "utf-8",
+    );
+    expect(await adapter.import(tmp)).toEqual([
+      {
+        id: "validEntry",
+        name: "validEntry",
+        transport: {
+          type: "stdio",
+          command: "node",
+          args: ["server.js"],
+          env: { OK: "1" },
+        },
+      },
+    ]);
+  });
+
+  it("strips only mcp.servers on uninstall, preserving hooks/model and deleting only if empty", async () => {
+    await mkdir(join(tmp, ".zcode"), { recursive: true });
+    const configPath = join(tmp, ".zcode", "config.json");
+
+    // Case 1: preserves sibling keys (model, hooks, other mcp settings)
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        model: "keep-me",
+        hooks: { enabled: true, events: {} },
+        mcp: {
+          timeoutMs: 5000,
+          servers: {
+            github: { type: "stdio", command: "npx", args: [] },
+          },
+        },
+      }),
+      "utf-8",
+    );
+    await adapter.uninstall(tmp);
+    expect(existsSync(configPath)).toBe(true);
+    expect(JSON.parse(await readFile(configPath, "utf-8"))).toEqual({
+      model: "keep-me",
+      hooks: { enabled: true, events: {} },
+      mcp: { timeoutMs: 5000 },
+    });
+
+    // Case 2: removes empty mcp block while preserving model
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        model: "keep-me",
+        mcp: {
+          servers: {
+            github: { type: "stdio", command: "npx", args: [] },
+          },
+        },
+      }),
+      "utf-8",
+    );
+    await adapter.uninstall(tmp);
+    expect(existsSync(configPath)).toBe(true);
+    expect(JSON.parse(await readFile(configPath, "utf-8"))).toEqual({
+      model: "keep-me",
+    });
+
+    // Case 3: deletes config.json when mcp.servers was the only content
+    await rm(configPath, { force: true });
+    await adapter.install(await adapter.generate([stdio]), tmp);
+    expect(existsSync(configPath)).toBe(true);
+    await adapter.uninstall(tmp);
+    expect(existsSync(configPath)).toBe(false);
   });
 });

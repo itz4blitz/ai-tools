@@ -10,6 +10,7 @@ import { parseCompatPayload, readStdinText, type HookRunnerIO } from "./grok-run
  */
 export async function runZcodeHook(io: HookRunnerIO = {}): Promise<number> {
   const env = io.env ?? process.env;
+  const stdout = io.stdout ?? process.stdout;
   const stderr = io.stderr ?? process.stderr;
 
   try {
@@ -24,9 +25,27 @@ export async function runZcodeHook(io: HookRunnerIO = {}): Promise<number> {
     const results = await engine.emit(event, { name: "zcode", version: "1.0" });
     const blocked = results.find((result) => result.blocked);
     if (blocked && isBlockingNativeEvent(nativeEvent)) {
-      stderr.write(blocked.reason ?? "Blocked by ai-hooks");
+      const reason = blocked.reason ?? "Blocked by ai-hooks";
+      stderr.write(reason.endsWith("\n") ? reason : `${reason}\n`);
       return 2;
     }
+
+    const note = results.find(
+      (result) =>
+        typeof result.data?.additionalContext === "string" &&
+        result.data.additionalContext.length > 0,
+    );
+    if (note && (nativeEvent === "UserPromptSubmit" || nativeEvent === "SessionStart")) {
+      stdout.write(
+        `${JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: nativeEvent,
+            additionalContext: note.data?.additionalContext,
+          },
+        })}\n`,
+      );
+    }
+
     return 0;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

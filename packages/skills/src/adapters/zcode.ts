@@ -2,8 +2,9 @@ import { BaseSkillAdapter } from "./base.js";
 import { registry } from "./registry.js";
 import type { SkillDefinition, GeneratedFile, SkillLayer } from "../types/index.js";
 import { existsSync } from "node:fs";
-import { readFile, readdir } from "node:fs/promises";
-import { resolve } from "node:path";
+import { readFile, readdir, rm } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 
 class ZcodeSkillAdapter extends BaseSkillAdapter {
   readonly id = "zcode";
@@ -11,6 +12,12 @@ class ZcodeSkillAdapter extends BaseSkillAdapter {
   readonly nativeSupport = true;
   readonly configDir = ".zcode/skills";
   readonly command = "zcode";
+
+  override async detect(cwd?: string): Promise<boolean> {
+    if (await super.detect(cwd)) return true;
+    const dir = cwd ?? process.cwd();
+    return existsSync(resolve(dir, ".zcode")) || existsSync(join(homedir(), ".zcode"));
+  }
 
   async generate(skills: SkillDefinition[], layer?: SkillLayer): Promise<GeneratedFile[]> {
     return this.skillFolders(skills, this.skillsDir(layer), formatSkill);
@@ -30,21 +37,29 @@ class ZcodeSkillAdapter extends BaseSkillAdapter {
     }
     return skills;
   }
+
+  override async uninstall(cwd?: string): Promise<void> {
+    const dir = cwd ?? process.cwd();
+    const skillsDir = resolve(dir, this.configDir);
+    if (existsSync(skillsDir)) {
+      await rm(skillsDir, { recursive: true, force: true });
+    }
+  }
 }
 
 function formatSkill(skill: SkillDefinition): string {
   const description = skill.description ?? skill.name;
-  return `---\nname: ${skill.name}\ndescription: ${description}\n---\n\n${skill.content}\n`;
+  return `---\nname: ${skill.id}\ndescription: ${description}\n---\n\n${skill.content}\n`;
 }
 
 function parseSkill(id: string, raw: string): SkillDefinition {
-  const match = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/.exec(raw.trim());
+  const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n([\s\S]*))?$/.exec(raw.trim());
   if (!match) return { id, name: id, content: raw.trim() };
   const frontmatter = match[1] ?? "";
   const body = (match[2] ?? "").trim();
   let name = id;
   let description: string | undefined;
-  for (const line of frontmatter.split("\n")) {
+  for (const line of frontmatter.split(/\r?\n/)) {
     const colon = line.indexOf(":");
     if (colon === -1) continue;
     const key = line.slice(0, colon).trim();
