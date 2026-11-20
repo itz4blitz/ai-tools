@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { syncWorkspaceVersions } from "../../../../scripts/sync-versions.js";
+import { resolveRepoRoot, syncWorkspaceVersions } from "../../../../scripts/sync-versions.js";
 
 function writeJson(path: string, value: unknown): void {
   writeFileSync(path, JSON.stringify(value, null, 2) + "\n");
@@ -37,5 +37,13 @@ describe("syncWorkspaceVersions", () => {
       JSON.parse(readFileSync(join(root, "packages", "agents", "package.json"), "utf8")).version,
     ).toBe("1.1.9");
     rmSync(root, { recursive: true, force: true });
+  });
+
+  it("resolves repo root cleanly across platforms without a leading slash on Windows", () => {
+    const repoRoot = resolveRepoRoot();
+    expect(existsSync(join(repoRoot, "package.json"))).toBe(true);
+    if (process.platform === "win32") {
+      expect(repoRoot).not.toMatch(/^\/[A-Za-z]:/);
+    }
   });
 });

@@ -13,9 +13,9 @@ describe("filterServers", () => {
   it("defaults missing layer to project", () => {
     const servers = [stdio("github")];
     expect(
-      filterServers(servers, { layer: "project", cwd: "/home/blitz/app" }).map((s) => s.id),
+      filterServers(servers, { layer: "project", cwd: "/workspace/app" }).map((s) => s.id),
     ).toEqual(["github"]);
-    expect(filterServers(servers, { layer: "user", cwd: "/home/blitz/app" })).toEqual([]);
+    expect(filterServers(servers, { layer: "user", cwd: "/workspace/app" })).toEqual([]);
   });
 
   it("keeps user-layer servers only for user installs", () => {
@@ -28,43 +28,41 @@ describe("filterServers", () => {
     ]);
   });
 
-  it("restricts PalamHealth servers to matching project paths", () => {
+  it("restricts path-gated servers to matching project paths", () => {
     const servers = [
-      stdio("palamhealth", { layer: "project", whenPathContains: ["PalamHealth"] }),
-      stdio("outline", { layer: "project", whenPathContains: ["PalamHealth"] }),
+      stdio("acme", { layer: "project", whenPathContains: ["AcmeCorp"] }),
+      stdio("outline", { layer: "project", whenPathContains: ["AcmeCorp"] }),
       stdio("github", { layer: "project" }),
     ];
-    const inPh = filterServers(servers, {
+    const inAcme = filterServers(servers, {
       layer: "project",
-      cwd: "/home/blitz/Development/PalamHealth/PalamHealth",
+      cwd: "/workspace/Development/AcmeCorp/app",
     }).map((s) => s.id);
-    expect(inPh).toEqual(["palamhealth", "outline", "github"]);
+    expect(inAcme).toEqual(["acme", "outline", "github"]);
 
-    const inPremier = filterServers(servers, {
+    const inOther = filterServers(servers, {
       layer: "project",
-      cwd: "/home/blitz/Development/PremierStudio/web",
+      cwd: "/workspace/Development/OtherOrg/web",
     }).map((s) => s.id);
-    expect(inPremier).toEqual(["github"]);
+    expect(inOther).toEqual(["github"]);
   });
 
   it("never installs path-gated servers into the user layer", () => {
-    const servers = [stdio("palamhealth", { layer: "project", whenPathContains: ["PalamHealth"] })];
+    const servers = [stdio("acme", { layer: "project", whenPathContains: ["AcmeCorp"] })];
     expect(
       filterServers(servers, {
         layer: "user",
-        cwd: "/home/blitz/Development/PalamHealth/PalamHealth",
+        cwd: "/workspace/Development/AcmeCorp/app",
       }),
     ).toEqual([]);
   });
 
   it("matches any fragment in whenPathContains", () => {
     const servers = [
-      stdio("ph", { layer: "project", whenPathContains: ["PalamHealth", "palamhealth"] }),
+      stdio("acme", { layer: "project", whenPathContains: ["AcmeCorp", "acmecorp"] }),
     ];
     expect(
-      filterServers(servers, { layer: "project", cwd: "/tmp/palamhealth-scratch" }).map(
-        (s) => s.id,
-      ),
-    ).toEqual(["ph"]);
+      filterServers(servers, { layer: "project", cwd: "/tmp/acmecorp-scratch" }).map((s) => s.id),
+    ).toEqual(["acme"]);
   });
 });

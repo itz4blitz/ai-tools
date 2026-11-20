@@ -9,7 +9,11 @@
 
 import { readFileSync, writeFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+export function resolveRepoRoot(moduleUrl = import.meta.url) {
+  return fileURLToPath(new URL("..", moduleUrl));
+}
 
 export function syncWorkspaceVersions(root, version) {
   const packagesDir = join(root, "packages");
@@ -57,7 +61,7 @@ function main() {
     process.exit(1);
   }
 
-  const root = new URL("..", import.meta.url).pathname;
+  const root = resolveRepoRoot(import.meta.url);
   syncWorkspaceVersions(root, version);
 }
 

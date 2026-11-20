@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { join } from "node:path";
 import { BaseAdapter } from "./base.js";
 import type {
   AdapterCapabilities,
@@ -199,9 +200,12 @@ describe("BaseAdapter", () => {
 
       await adapter.install(configs);
 
-      expect(mockedMkdir).toHaveBeenCalledWith(expect.stringContaining("deep/nested/dir"), {
-        recursive: true,
-      });
+      expect(mockedMkdir).toHaveBeenCalledWith(
+        expect.stringContaining(join("deep", "nested", "dir")),
+        {
+          recursive: true,
+        },
+      );
     });
 
     it("handles empty config array", async () => {
@@ -289,7 +293,9 @@ describe("BaseAdapter", () => {
 
       await adapter.publicWriteJsonFile("a/b/c.json", {});
 
-      expect(mockedMkdir).toHaveBeenCalledWith(expect.stringContaining("a/b"), { recursive: true });
+      expect(mockedMkdir).toHaveBeenCalledWith(expect.stringContaining(join("a", "b")), {
+        recursive: true,
+      });
     });
   });
 

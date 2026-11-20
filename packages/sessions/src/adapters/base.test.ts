@@ -78,6 +78,64 @@ describe("BaseSessionAdapter", () => {
       const path = await adapter.getStoragePath();
       expect(path).toBeNull();
     });
+
+    it("expands %APPDATA% and %LOCALAPPDATA% environment placeholders", async () => {
+      const prevAppData = process.env.APPDATA;
+      const prevLocalAppData = process.env.LOCALAPPDATA;
+      process.env.APPDATA = "C:\\Users\\dev\\AppData\\Roaming";
+      process.env.LOCALAPPDATA = "C:\\Users\\dev\\AppData\\Local";
+
+      class WinStorageAdapter extends BaseSessionAdapter {
+        readonly id = "win";
+        readonly name = "Win Tool";
+        readonly command = "win-tool";
+        readonly storagePaths = ["%APPDATA%\\WinTool\\sessions", "%LOCALAPPDATA%\\WinTool"];
+        async parseSessions(): Promise<UnifiedSession[]> {
+          return [];
+        }
+      }
+
+      try {
+        vi.mocked(existsSync).mockImplementation(
+          (p) => String(p) === "C:\\Users\\dev\\AppData\\Local\\WinTool",
+        );
+        const winAdapter = new WinStorageAdapter();
+        expect(await winAdapter.getStoragePath()).toBe("C:\\Users\\dev\\AppData\\Local\\WinTool");
+      } finally {
+        if (prevAppData === undefined) delete process.env.APPDATA;
+        else process.env.APPDATA = prevAppData;
+        if (prevLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+        else process.env.LOCALAPPDATA = prevLocalAppData;
+      }
+    });
+  });
+
+  describe("detect() / commandExists()", () => {
+    it("detects node binary on the current platform via where/which", async () => {
+      class NodeToolAdapter extends BaseSessionAdapter {
+        readonly id = "node-tool";
+        readonly name = "Node Tool";
+        readonly command = "node";
+        readonly storagePaths: string[] = [];
+        async parseSessions(): Promise<UnifiedSession[]> {
+          return [];
+        }
+      }
+      expect(await new NodeToolAdapter().detect()).toBe(true);
+    });
+
+    it("returns false for a nonexistent binary", async () => {
+      class MissingToolAdapter extends BaseSessionAdapter {
+        readonly id = "missing";
+        readonly name = "Missing";
+        readonly command = "definitely-not-a-real-binary-xyz-987654";
+        readonly storagePaths: string[] = [];
+        async parseSessions(): Promise<UnifiedSession[]> {
+          return [];
+        }
+      }
+      expect(await new MissingToolAdapter().detect()).toBe(false);
+    });
   });
 
   describe("extractContext()", () => {

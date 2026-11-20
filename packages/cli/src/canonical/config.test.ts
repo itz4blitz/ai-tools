@@ -12,6 +12,7 @@ vi.mock("node:fs/promises", () => ({
 
 import { existsSync } from "node:fs";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { join } from "node:path";
 import { readConfig, writeConfig, getMode, isCanonical } from "./config.js";
 
 const mockExistsSync = vi.mocked(existsSync);
@@ -47,7 +48,9 @@ describe("readConfig", () => {
   it("uses process.cwd() when cwd is not provided", async () => {
     mockExistsSync.mockReturnValue(false);
     await readConfig();
-    expect(mockExistsSync).toHaveBeenCalledWith(expect.stringContaining(".ai-tools/config.json"));
+    expect(mockExistsSync).toHaveBeenCalledWith(
+      expect.stringContaining(join(".ai-tools", "config.json")),
+    );
   });
 });
 
@@ -61,7 +64,7 @@ describe("writeConfig", () => {
       recursive: true,
     });
     expect(mockWriteFile).toHaveBeenCalledWith(
-      expect.stringContaining(".ai-tools/config.json"),
+      expect.stringContaining(join(".ai-tools", "config.json")),
       JSON.stringify(config, null, 2) + "\n",
       "utf-8",
     );

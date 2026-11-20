@@ -300,7 +300,7 @@ async function cmdAudit(flags: Flags): Promise<void> {
   }
 
   if (findings.length === 0) {
-    console.log("No PalamHealth user-global MCP leaks found.");
+    console.log("No user-global MCP leaks found.");
     return;
   }
 

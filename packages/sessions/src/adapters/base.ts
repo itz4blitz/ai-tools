@@ -58,8 +58,16 @@ export abstract class BaseSessionAdapter {
   async getStoragePath(): Promise<string | null> {
     const { existsSync } = await import("node:fs");
     const { homedir } = await import("node:os");
+    const appData = process.env.APPDATA;
+    const localAppData = process.env.LOCALAPPDATA;
     for (const p of this.storagePaths) {
-      const resolved = p.replace("~", homedir());
+      let resolved = p.replace("~", homedir());
+      if (appData) {
+        resolved = resolved.replace(/%APPDATA%/gi, () => appData);
+      }
+      if (localAppData) {
+        resolved = resolved.replace(/%LOCALAPPDATA%/gi, () => localAppData);
+      }
       if (existsSync(resolved)) return resolved;
     }
     return null;
@@ -182,9 +190,10 @@ export abstract class BaseSessionAdapter {
   }
 
   protected async commandExists(command: string): Promise<boolean> {
-    const { exec } = await import("node:child_process");
+    const { execFile } = await import("node:child_process");
+    const lookupCommand = process.platform === "win32" ? "where" : "which";
     return new Promise((ok) => {
-      exec(`which ${command}`, (error) => {
+      execFile(lookupCommand, [command], (error) => {
         ok(!error);
       });
     });

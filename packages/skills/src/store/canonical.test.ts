@@ -14,6 +14,7 @@ vi.mock("node:fs/promises", () => ({
 
 import { existsSync } from "node:fs";
 import { readFile, writeFile, mkdir, readdir, rm } from "node:fs/promises";
+import { join } from "node:path";
 import { CanonicalStore } from "./canonical.js";
 import type { SkillDefinition } from "../types/index.js";
 
@@ -45,7 +46,7 @@ describe("CanonicalStore.write", () => {
     const store = new CanonicalStore("/test");
     const paths = await store.write([skill]);
 
-    expect(mockMkdir).toHaveBeenCalledWith(expect.stringContaining(".ai-tools/skills"), {
+    expect(mockMkdir).toHaveBeenCalledWith(expect.stringContaining(join(".ai-tools", "skills")), {
       recursive: true,
     });
     expect(mockWriteFile).toHaveBeenCalledWith(

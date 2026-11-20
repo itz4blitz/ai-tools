@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { BaseAdapter, registry } from "./index.js";
 import { collectNativeEvents, parseHookGroups, type NativeHookGroup } from "./claude-compat.js";
 import type {
@@ -65,8 +65,8 @@ class ZcodeAdapter extends BaseAdapter {
   readonly id = "zcode";
   readonly name = "ZCode";
   readonly version = "1.0";
-  readonly userConfigPath = `${homedir()}/.zcode/cli/config.json`;
-  readonly userHooksPath = `${homedir()}/.zcode/hooks.json`;
+  readonly userConfigPath = join(homedir(), ".zcode", "cli", "config.json");
+  readonly userHooksPath = join(homedir(), ".zcode", "hooks.json");
 
   readonly capabilities: AdapterCapabilities = {
     beforeHooks: true,

@@ -26,7 +26,7 @@ describe("ZcodeMCPAdapter", () => {
   const stdio: MCPServerDefinition = {
     id: "github",
     name: "github",
-    transport: { type: "stdio", command: "/home/blitz/.local/bin/gh-mcp", args: [] },
+    transport: { type: "stdio", command: "/usr/local/bin/gh-mcp", args: [] },
   };
 
   beforeEach(() => {
@@ -54,7 +54,7 @@ describe("ZcodeMCPAdapter", () => {
       mcp: { servers: Record<string, { command: string; type: string; args: string[] }> };
     };
     expect(parsed.mcp.servers.github?.type).toBe("stdio");
-    expect(parsed.mcp.servers.github?.command).toBe("/home/blitz/.local/bin/gh-mcp");
+    expect(parsed.mcp.servers.github?.command).toBe("/usr/local/bin/gh-mcp");
     expect(parsed.mcp.servers.github?.args).toEqual([]);
     expect(files[0]!.content).not.toContain("mcpServers");
   });
@@ -97,11 +97,11 @@ describe("ZcodeMCPAdapter", () => {
         model: "keep-me",
         mcp: {
           servers: {
-            palamhealth: {
+            acme: {
               type: "stdio",
-              command: "/home/blitz/.local/bin/palamhealth-mcp-stdio",
+              command: "/usr/local/bin/acme-mcp-stdio",
               args: [],
-              env: { OP_ACCOUNT: "palamhealth.1password.com" },
+              env: { OP_ACCOUNT: "acme.1password.com" },
             },
           },
         },
@@ -109,7 +109,7 @@ describe("ZcodeMCPAdapter", () => {
     );
     const servers = await adapter.importUser();
     expect(servers).toHaveLength(1);
-    expect(servers[0]?.id).toBe("palamhealth");
+    expect(servers[0]?.id).toBe("acme");
     expect(servers[0]?.transport.type).toBe("stdio");
   });
 
@@ -127,7 +127,7 @@ describe("ZcodeMCPAdapter", () => {
     };
     expect(written.model).toBe("keep-me");
     expect(written.mcp.servers.github?.type).toBe("stdio");
-    expect(written.mcp.servers.github?.command).toBe("/home/blitz/.local/bin/gh-mcp");
+    expect(written.mcp.servers.github?.command).toBe("/usr/local/bin/gh-mcp");
     expect(vi.mocked(mkdir)).toHaveBeenCalled();
   });
 });

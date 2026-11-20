@@ -11,7 +11,7 @@ Two transport types (plus `http`, which adapters map to native URL/remote forms)
 - `{ type: "stdio", command: string, args?: string[], env?: Record<string, string> }`
 - `{ type: "sse" | "http", url: string, headers?: Record<string, string> }`
 
-Servers may set `layer: "user" | "project"` (default project) and `whenPathContains` so PalamHealth MCPs install only in PalamHealth repos. `ai-mcp audit` scans user-global configs for interactive `op-run-palamhealth` and PalamHealth servers that leaked out of project scope.
+Servers may set `layer: "user" | "project"` (default project) and `whenPathContains` so project-scoped MCPs install only in matching repos. `ai-mcp audit` scans user-global configs for interactive secret wrappers and project-scoped servers that leaked out of project scope.
 
 Config: `MCPConfig { servers: MCPServerDefinition[] }`
 

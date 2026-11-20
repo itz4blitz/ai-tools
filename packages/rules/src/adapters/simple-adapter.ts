@@ -32,7 +32,7 @@ export abstract class SimpleMarkdownRuleAdapter extends BaseRuleAdapter {
   }
 
   private parseSimpleRule(id: string, raw: string): RuleDefinition {
-    const lines = raw.trim().split("\n");
+    const lines = raw.trim().split(/\r?\n/);
     let name = id;
     let contentStart = 0;
 

@@ -28,7 +28,7 @@ describe("GrokMCPAdapter", () => {
     name: "context7",
     transport: {
       type: "stdio",
-      command: "/home/blitz/.local/bin/op-mcp-run-grok",
+      command: "/usr/local/bin/op-mcp-run-grok",
       args: ["npx", "-y", "@upstash/context7-mcp"],
       env: { CONTEXT7_API_KEY: "op://mcp-secrets/Context7 API Key/password" },
     },
@@ -53,7 +53,7 @@ describe("GrokMCPAdapter", () => {
     expect(files[0]?.format).toBe("toml");
     expect(files[0]?.content).toContain("[mcp_servers.context7]");
     expect(files[0]?.content).toContain("[mcp_servers.context7.env]");
-    expect(files[0]?.content).toContain('command = "/home/blitz/.local/bin/op-mcp-run-grok"');
+    expect(files[0]?.content).toContain('command = "/usr/local/bin/op-mcp-run-grok"');
     expect(files[0]?.content).toContain('args = ["npx", "-y", "@upstash/context7-mcp"]');
     expect(files[0]?.content).not.toContain("mcpServers");
   });
@@ -79,12 +79,12 @@ describe("GrokMCPAdapter", () => {
   it("generates quoted tables for names with spaces", async () => {
     const files = await adapter.generate([
       {
-        id: "GWS - Premier Studio",
-        name: "GWS - Premier Studio",
-        transport: { type: "stdio", command: "/bin/gws-mcp-premier-studio" },
+        id: "Workspace - Demo Org",
+        name: "Workspace - Demo Org",
+        transport: { type: "stdio", command: "/bin/workspace-mcp-demo" },
       },
     ]);
-    expect(files[0]?.content).toContain('[mcp_servers."GWS - Premier Studio"]');
+    expect(files[0]?.content).toContain('[mcp_servers."Workspace - Demo Org"]');
   });
 
   it("imports nothing when neither config exists", async () => {
@@ -93,7 +93,9 @@ describe("GrokMCPAdapter", () => {
   });
 
   it("imports project TOML servers", async () => {
-    vi.mocked(existsSync).mockImplementation((path) => String(path).endsWith(".grok/config.toml"));
+    vi.mocked(existsSync).mockImplementation((path) =>
+      String(path).replaceAll("\\", "/").endsWith(".grok/config.toml"),
+    );
     vi.mocked(readFile).mockResolvedValue(`[mcp_servers.github]
 command = "gh-mcp"
 `);

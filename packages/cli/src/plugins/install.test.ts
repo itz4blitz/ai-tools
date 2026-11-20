@@ -150,9 +150,7 @@ describe("installPluginBundle", () => {
       agents: { get: () => undefined },
       hooks: { get: () => undefined },
     });
-    const cwdSpy = vi
-      .spyOn(process, "cwd")
-      .mockReturnValue("/home/blitz/Development/PremierStudio/web");
+    const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue("/workspace/Development/OtherOrg/web");
     const { installPluginBundle } = await import("./install.js");
 
     const result = await installPluginBundle(
@@ -165,11 +163,11 @@ describe("installPluginBundle", () => {
             transport: { type: "stdio", command: "gh-mcp" },
           },
           {
-            id: "palamhealth",
-            name: "PalamHealth",
-            transport: { type: "stdio", command: "palamhealth-mcp" },
+            id: "acme",
+            name: "Acme",
+            transport: { type: "stdio", command: "acme-mcp" },
             layer: "project",
-            whenPathContains: ["PalamHealth"],
+            whenPathContains: ["AcmeCorp"],
           },
           {
             id: "unifi",
@@ -188,7 +186,7 @@ describe("installPluginBundle", () => {
     expect(result.installed).toHaveLength(1);
   });
 
-  it("installs PalamHealth servers only when cwd contains a required path fragment", async () => {
+  it("installs path-gated servers only when cwd contains a required path fragment", async () => {
     const mcpAdapter = adapter([{ path: ".codex/mcp.json", content: "{}", format: "json" }]);
     loadEngineRegistries.mockResolvedValue({
       mcp: { get: () => mcpAdapter },
@@ -197,9 +195,7 @@ describe("installPluginBundle", () => {
       agents: { get: () => undefined },
       hooks: { get: () => undefined },
     });
-    const cwdSpy = vi
-      .spyOn(process, "cwd")
-      .mockReturnValue("/home/blitz/Development/PalamHealth/PalamHealth");
+    const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue("/workspace/Development/AcmeCorp/app");
     const { installPluginBundle } = await import("./install.js");
 
     await installPluginBundle(
@@ -207,11 +203,11 @@ describe("installPluginBundle", () => {
         ...plugin,
         mcpServers: [
           {
-            id: "palamhealth",
-            name: "PalamHealth",
-            transport: { type: "stdio", command: "palamhealth-mcp" },
+            id: "acme",
+            name: "Acme",
+            transport: { type: "stdio", command: "acme-mcp" },
             layer: "project",
-            whenPathContains: ["PalamHealth", "palamhealth"],
+            whenPathContains: ["AcmeCorp", "acmecorp"],
           },
         ],
       },
@@ -219,9 +215,7 @@ describe("installPluginBundle", () => {
     );
 
     cwdSpy.mockRestore();
-    expect(mcpAdapter.generate).toHaveBeenCalledWith([
-      expect.objectContaining({ id: "palamhealth" }),
-    ]);
+    expect(mcpAdapter.generate).toHaveBeenCalledWith([expect.objectContaining({ id: "acme" })]);
   });
 
   it("skips MCP install instead of writing an empty config when every server is filtered out", async () => {
@@ -233,9 +227,7 @@ describe("installPluginBundle", () => {
       agents: { get: () => undefined },
       hooks: { get: () => undefined },
     });
-    const cwdSpy = vi
-      .spyOn(process, "cwd")
-      .mockReturnValue("/home/blitz/Development/PremierStudio/web");
+    const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue("/workspace/Development/OtherOrg/web");
     const { installPluginBundle } = await import("./install.js");
 
     const result = await installPluginBundle(
@@ -243,11 +235,11 @@ describe("installPluginBundle", () => {
         ...plugin,
         mcpServers: [
           {
-            id: "palamhealth",
-            name: "PalamHealth",
-            transport: { type: "stdio", command: "palamhealth-mcp" },
+            id: "acme",
+            name: "Acme",
+            transport: { type: "stdio", command: "acme-mcp" },
             layer: "project",
-            whenPathContains: ["PalamHealth"],
+            whenPathContains: ["AcmeCorp"],
           },
         ],
       },
