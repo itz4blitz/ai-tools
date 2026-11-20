@@ -11,6 +11,7 @@ const TOOL_DEFINITIONS: Record<string, { name: string; command: string }> = {
   cursor: { name: "Cursor", command: "cursor" },
   copilot: { name: "GitHub Copilot", command: "gh copilot" },
   droid: { name: "Factory Droid", command: "droid" },
+  "antigravity-cli": { name: "Antigravity CLI", command: "agy" },
 };
 
 /**

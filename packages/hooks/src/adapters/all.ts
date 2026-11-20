@@ -1,4 +1,5 @@
 // Side-effect imports to register all built-in adapters with the registry.
+import "./antigravity-cli.js";
 import "./claude-code.js";
 import "./codex.js";
 import "./cline.js";

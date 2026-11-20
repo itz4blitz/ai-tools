@@ -11,6 +11,7 @@ const TOOL_DEFINITIONS: Record<string, { name: string; command: string; args: st
   cursor: { name: "Cursor", command: "cursor", args: [] },
   copilot: { name: "GitHub Copilot", command: "gh", args: ["copilot"] },
   droid: { name: "Factory Droid", command: "droid", args: [] },
+  "antigravity-cli": { name: "Antigravity CLI", command: "agy", args: [] },
 };
 
 export type SwitchResult = {

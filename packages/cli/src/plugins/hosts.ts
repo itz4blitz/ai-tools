@@ -82,11 +82,11 @@ export const KNOWN_PLUGIN_HOSTS: Record<string, PluginHostInfo> = {
     id: "antigravity-cli",
     name: "Antigravity CLI",
     kind: "hybrid",
-    nativeEngineSupport: { mcp: false, skills: true, rules: true, agents: true, hooks: false },
+    nativeEngineSupport: { mcp: true, skills: true, rules: true, agents: true, hooks: true },
     supportsInteractiveApps: true,
     supportsNativeBundles: true,
     notes:
-      "Antigravity CLI adapters cover workspace .agents skills, agents, and rules. There is no MCP or hooks adapter.",
+      "Antigravity CLI (agy) covers workspace .agents skills, agents, rules, hooks (.agents/hooks.json), and MCP (.agents/plugins/ai-tools/mcp_config.json), plus user ~/.gemini/config surfaces.",
   },
   windsurf: {
     id: "windsurf",

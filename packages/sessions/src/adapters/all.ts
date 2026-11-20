@@ -1,3 +1,4 @@
+import "./antigravity-cli.js";
 import "./claude.js";
 import "./codex.js";
 import "./copilot.js";

@@ -69,6 +69,7 @@ export type IconName =
   | "tool.opencode"
   | "tool.amp"
   | "tool.cline"
+  | "tool.antigravity"
   | "tool.generic"
   // Brand icons
   | "brand.logo"
@@ -164,6 +165,7 @@ export const ICONS: Record<IconName, IconDef> = {
   "tool.opencode": { glyph: "⬡", fallback: "[O]", width: 1 },
   "tool.amp": { glyph: "⚡", fallback: "[A]", width: 2 },
   "tool.cline": { glyph: "◎", fallback: "[L]", width: 1 },
+  "tool.antigravity": { glyph: "✦", fallback: "[G]", width: 1 },
   "tool.generic": { glyph: "◆", fallback: "[*]", width: 1 },
 
   // Brand icons
@@ -221,6 +223,7 @@ export function getToolIcon(toolId: string): IconName {
   if (toolId.startsWith("opencode")) return "tool.opencode";
   if (toolId.startsWith("amp")) return "tool.amp";
   if (toolId.startsWith("cline")) return "tool.cline";
+  if (toolId.startsWith("antigravity")) return "tool.antigravity";
   return "tool.generic";
 }
 
@@ -235,6 +238,7 @@ export function getToolColor(toolId: string): RgbColor {
   if (toolId.startsWith("opencode")) return TOOLS.opencode;
   if (toolId.startsWith("amp")) return TOOLS.amp;
   if (toolId.startsWith("cline")) return TOOLS.cline;
+  if (toolId.startsWith("antigravity")) return TOOLS.gemini;
   return STATUS.neutral;
 }
 
