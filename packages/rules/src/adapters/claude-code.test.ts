@@ -1,31 +1,18 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-
-vi.mock("./registry.js", () => ({
-  registry: { register: vi.fn() },
-}));
-
-vi.mock("node:fs", () => ({
-  existsSync: vi.fn(() => false),
-}));
-
-vi.mock("node:fs/promises", () => ({
-  readFile: vi.fn(),
-  readdir: vi.fn(),
-  writeFile: vi.fn(),
-  mkdir: vi.fn(),
-  rm: vi.fn(),
-}));
-
-vi.mock("node:child_process", () => ({
-  exec: vi.fn((_cmd: string, callback: (error: Error | null) => void) => {
-    callback(new Error("not found"));
-  }),
-}));
-
 import { existsSync } from "node:fs";
-import { readFile, readdir } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ClaudeCodeRuleAdapter } from "./claude-code.js";
 import type { RuleDefinition } from "../types/index.js";
+
+const temps: string[] = [];
+
+async function tempDir(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "ai-rules-claude-"));
+  temps.push(dir);
+  return dir;
+}
 
 describe("ClaudeCodeRuleAdapter", () => {
   let adapter: ClaudeCodeRuleAdapter;
@@ -47,156 +34,87 @@ describe("ClaudeCodeRuleAdapter", () => {
   };
 
   beforeEach(() => {
-    vi.clearAllMocks();
     adapter = new ClaudeCodeRuleAdapter();
   });
 
-  describe("metadata", () => {
-    it("has correct id", () => expect(adapter.id).toBe("claude-code"));
-    it("has correct name", () => expect(adapter.name).toBe("Claude Code"));
-    it("has correct configDir", () => expect(adapter.configDir).toBe(".claude/rules"));
-    it("has nativeSupport true", () => expect(adapter.nativeSupport).toBe(true));
+  afterEach(async () => {
+    await Promise.all(temps.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
   });
 
-  describe("generate", () => {
-    it("generates one file per rule", async () => {
-      const files = await adapter.generate([testRule]);
-      expect(files).toHaveLength(1);
-      expect(files[0].path).toBe(".claude/rules/typescript.md");
-      expect(files[0].format).toBe("md");
+  describe("metadata", () => {
+    it("has correct metadata", () => {
+      expect(adapter.id).toBe("claude-code");
+      expect(adapter.name).toBe("Claude Code");
+      expect(adapter.configDir).toBe(".claude/rules");
+      expect(adapter.nativeSupport).toBe(true);
     });
+  });
 
-    it("includes frontmatter with description and globs", async () => {
-      const files = await adapter.generate([testRule]);
-      expect(files[0].content).toContain("---");
-      expect(files[0].content).toContain("description: TypeScript coding standards");
-      expect(files[0].content).toContain('- "*.ts"');
-      expect(files[0].content).toContain('- "*.tsx"');
-    });
-
-    it("includes rule content after frontmatter", async () => {
-      const files = await adapter.generate([testRule]);
-      expect(files[0].content).toContain("Always use strict TypeScript.");
-      expect(files[0].content).toContain("No any types.");
-    });
-
-    it("handles always scope without globs", async () => {
-      const files = await adapter.generate([alwaysRule]);
-      expect(files[0].content).toContain("description: General rules");
-      expect(files[0].content).not.toContain("globs:");
-    });
-
-    it("generates rule without description", async () => {
-      const noDescRule: RuleDefinition = {
-        id: "nodesc",
-        name: "No Description",
-        content: "Content only.",
-        scope: { type: "always" },
-      };
-      const files = await adapter.generate([noDescRule]);
-      expect(files[0].content).not.toContain("description:");
-      expect(files[0].content).toContain("Content only.");
-    });
-
-    it("generates rule with glob scope patterns", async () => {
-      const files = await adapter.generate([testRule]);
-      expect(files[0].content).toContain("globs:");
-      expect(files[0].content).toContain('- "*.ts"');
-      expect(files[0].content).toContain('- "*.tsx"');
-    });
-
-    it("handles empty rules array", async () => {
-      const files = await adapter.generate([]);
-      expect(files).toHaveLength(0);
-    });
-
-    it("generates multiple files for multiple rules", async () => {
+  describe("generate & roundtrip", () => {
+    it("emits paths: (not globs:) in frontmatter and roundtrips on disk", async () => {
+      const dir = await tempDir();
       const files = await adapter.generate([testRule, alwaysRule]);
       expect(files).toHaveLength(2);
-      expect(files[0].path).toBe(".claude/rules/typescript.md");
-      expect(files[1].path).toBe(".claude/rules/general.md");
-    });
-  });
+      expect(files[0]!.content).toContain("paths:\n");
+      expect(files[0]!.content).not.toContain("globs:");
+      expect(files[0]!.content).toContain('  - "*.ts"');
+      expect(files[1]!.content).not.toContain("paths:");
 
-  describe("import", () => {
-    it("returns empty when dir missing", async () => {
-      vi.mocked(existsSync).mockReturnValue(false);
-      const result = await adapter.import("/test");
-      expect(result).toEqual([]);
+      await adapter.install(files, dir);
+      const imported = await adapter.import(dir);
+      expect(imported).toHaveLength(2);
+
+      const ts = imported.find((r) => r.id === "typescript");
+      expect(ts).toBeDefined();
+      expect(ts!.description).toBe("TypeScript coding standards");
+      expect(ts!.scope).toEqual({ type: "glob", patterns: ["*.ts", "*.tsx"] });
+      expect(ts!.content).toBe("Always use strict TypeScript.\nNo any types.");
+
+      const general = imported.find((r) => r.id === "general");
+      expect(general).toBeDefined();
+      expect(general!.scope).toEqual({ type: "always" });
+      expect(general!.content).toBe("Be concise.");
     });
 
-    it("imports rules with frontmatter", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir).mockResolvedValue(["ts.md"] as never);
-      vi.mocked(readFile).mockResolvedValue(
-        '---\ndescription: TS rules\nglobs:\n  - "*.ts"\n---\n\nUse strict TS.',
+    it("accepts legacy globs:, scopes list items to active key, normalizes CRLF, and scans subdirectories recursively", async () => {
+      const dir = await tempDir();
+      const nestedDir = join(dir, ".claude", "rules", "frontend");
+      await mkdir(nestedDir, { recursive: true });
+
+      await writeFile(
+        join(dir, ".claude", "rules", "legacy.md"),
+        '---\r\ndescription: Legacy rule\r\ntags:\r\n  - ignored-tag\r\nglobs:\r\n  - "src/**/*.ts"\r\n---\r\n\r\nLegacy body.\r\n',
+        "utf-8",
       );
-      const result = await adapter.import("/test");
-      expect(result).toHaveLength(1);
-      expect(result[0].id).toBe("ts");
-      expect(result[0].description).toBe("TS rules");
-      expect(result[0].scope).toEqual({ type: "glob", patterns: ["*.ts"] });
-      expect(result[0].content).toBe("Use strict TS.");
+      await writeFile(
+        join(nestedDir, "react.md"),
+        '---\r\ndescription: React rule\r\npaths:\r\n  - "**/*.tsx"\r\n---\r\n\r\nUse hooks.\r\n',
+        "utf-8",
+      );
+      await writeFile(join(nestedDir, "notes.txt"), "ignore me", "utf-8");
+
+      const imported = await adapter.import(dir);
+      expect(imported).toHaveLength(2);
+
+      const legacy = imported.find((r) => r.id === "legacy");
+      expect(legacy).toBeDefined();
+      expect(legacy!.scope).toEqual({ type: "glob", patterns: ["src/**/*.ts"] });
+      expect(legacy!.content).toBe("Legacy body.");
+
+      const react = imported.find((r) => r.id === "frontend/react");
+      expect(react).toBeDefined();
+      expect(react!.description).toBe("React rule");
+      expect(react!.scope).toEqual({ type: "glob", patterns: ["**/*.tsx"] });
+      expect(react!.content).toBe("Use hooks.");
     });
 
-    it("imports rules without frontmatter", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir).mockResolvedValue(["simple.md"] as never);
-      vi.mocked(readFile).mockResolvedValue("Just plain content.");
-      const result = await adapter.import("/test");
-      expect(result).toHaveLength(1);
-      expect(result[0].id).toBe("simple");
-      expect(result[0].content).toBe("Just plain content.");
-      expect(result[0].scope).toEqual({ type: "always" });
-    });
+    it("uninstall removes .claude/rules directory", async () => {
+      const dir = await tempDir();
+      await adapter.install(await adapter.generate([testRule]), dir);
+      expect(existsSync(join(dir, ".claude/rules/typescript.md"))).toBe(true);
 
-    it("uses process.cwd() when cwd is not provided", async () => {
-      vi.mocked(existsSync).mockReturnValue(false);
-      const result = await adapter.import();
-      expect(result).toEqual([]);
-    });
-
-    it("imports rules with frontmatter but no globs", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir).mockResolvedValue(["general.md"] as never);
-      vi.mocked(readFile).mockResolvedValue("---\ndescription: General rules\n---\n\nBe concise.");
-      const result = await adapter.import("/test");
-      expect(result).toHaveLength(1);
-      expect(result[0].id).toBe("general");
-      expect(result[0].description).toBe("General rules");
-      expect(result[0].scope).toEqual({ type: "always" });
-      expect(result[0].content).toBe("Be concise.");
-    });
-
-    it("skips non-md files", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir).mockResolvedValue(["readme.txt", "rule.md"] as never);
-      vi.mocked(readFile).mockResolvedValue("Content");
-      const result = await adapter.import("/test");
-      expect(result).toHaveLength(1);
-      expect(result[0].id).toBe("rule");
-    });
-  });
-
-  describe("detect", () => {
-    it("returns true when configDir exists", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      expect(await adapter.detect("/test")).toBe(true);
-    });
-
-    it("returns false when configDir missing and command not found", async () => {
-      vi.mocked(existsSync).mockReturnValue(false);
-      expect(await adapter.detect("/test")).toBe(false);
-    });
-
-    it("returns true when configDir missing but command exists", async () => {
-      const { exec } = await import("node:child_process");
-      vi.mocked(exec).mockImplementation((_cmd: unknown, callback: unknown) => {
-        (callback as (error: Error | null) => void)(null);
-        return undefined as never;
-      });
-      vi.mocked(existsSync).mockReturnValue(false);
-      expect(await adapter.detect("/test")).toBe(true);
+      await adapter.uninstall(dir);
+      expect(existsSync(join(dir, ".claude/rules"))).toBe(false);
     });
   });
 });

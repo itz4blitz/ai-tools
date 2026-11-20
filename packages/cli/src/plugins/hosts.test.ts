@@ -49,6 +49,11 @@ describe("KNOWN_PLUGIN_HOSTS", () => {
     expect(KNOWN_PLUGIN_HOSTS.zcode?.nativeEngineSupport.hooks).toBe(true);
   });
 
+  it("marks claude-code as supporting native bundles and references skills in notes", () => {
+    expect(KNOWN_PLUGIN_HOSTS["claude-code"]?.supportsNativeBundles).toBe(true);
+    expect(KNOWN_PLUGIN_HOSTS["claude-code"]?.notes.toLowerCase()).toContain("skills");
+  });
+
   it("fills every PluginEngine key on each host", () => {
     for (const host of Object.values(KNOWN_PLUGIN_HOSTS)) {
       for (const engine of ENGINES) {

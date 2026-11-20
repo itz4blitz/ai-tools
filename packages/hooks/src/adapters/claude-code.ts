@@ -1,30 +1,32 @@
+import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 import { BaseAdapter, registry } from "./index.js";
+import { collectNativeEvents, parseHookGroups } from "./claude-compat.js";
 import type {
   AdapterCapabilities,
   GeneratedConfig,
   HookDefinition,
   HookEventType,
 } from "../types/index.js";
-import { resolve } from "node:path";
-import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
 
 /**
  * Event mapping: ai-hooks universal events -> Claude Code native hooks.
  */
 const EVENT_MAP: Record<string, string[]> = {
   "session:start": ["SessionStart"],
-  "session:end": ["Stop"],
+  "session:end": ["SessionEnd"],
   "prompt:submit": ["UserPromptSubmit"],
-  "prompt:response": ["PostToolUse"], // approximate - Claude doesn't expose response directly
+  "prompt:response": ["Stop"],
   "tool:before": ["PreToolUse"],
   "tool:after": ["PostToolUse"],
-  "file:read": ["PreToolUse"], // Read tool
-  "file:write": ["PreToolUse"], // Write tool
-  "file:edit": ["PreToolUse"], // Edit tool
+  "file:read": ["PreToolUse"],
+  "file:write": ["PreToolUse"],
+  "file:edit": ["PreToolUse"],
   "file:delete": ["PreToolUse"],
-  "shell:before": ["PreToolUse"], // Bash tool
-  "shell:after": ["PostToolUse"], // Bash tool
+  "shell:before": ["PreToolUse"],
+  "shell:after": ["PostToolUse"],
   "mcp:before": ["PreToolUse"],
   "mcp:after": ["PostToolUse"],
   notification: ["Notification"],
@@ -32,30 +34,44 @@ const EVENT_MAP: Record<string, string[]> = {
 
 const REVERSE_MAP: Record<string, HookEventType[]> = {
   SessionStart: ["session:start"],
+  SessionEnd: ["session:end"],
   UserPromptSubmit: ["prompt:submit"],
-  Stop: ["session:end"],
+  Stop: ["prompt:response"],
   PreToolUse: [
     "tool:before",
+    "file:read",
     "file:write",
     "file:edit",
     "file:delete",
     "shell:before",
     "mcp:before",
   ],
+  PermissionRequest: ["tool:before", "shell:before", "mcp:before"],
   PostToolUse: ["tool:after", "shell:after", "mcp:after"],
+  PostToolUseFailure: ["tool:after", "shell:after", "mcp:after"],
+  SubagentStart: ["session:start"],
+  SubagentStop: ["session:end"],
+  PreCompact: ["notification"],
   Notification: ["notification"],
 };
+
+const SETTINGS_PATH = ".claude/settings.json";
+const LOCAL_SETTINGS_PATH = ".claude/settings.local.json";
+const RUNNER_PATH = ".claude/hooks/ai-tools-hooks-runner.js";
+const LEGACY_RUNNER_PATH = ".claude/hooks/ai-hooks-runner.js";
+const RUNNER_COMMAND = `node "\${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/ai-tools-hooks-runner.js"`;
 
 /**
  * Claude Code adapter for ai-hooks.
  *
- * Generates `.claude/settings.json` hook entries and shell scripts
- * that delegate to the ai-hooks runtime.
+ * Generates `.claude/settings.json` hook entries and a runner script
+ * that delegates to `runClaudeCodeHook()`.
  */
 class ClaudeCodeAdapter extends BaseAdapter {
   readonly id = "claude-code";
   readonly name = "Claude Code";
   readonly version = "1.0";
+  readonly userSettingsPath = join(homedir(), ".claude", "settings.json");
 
   readonly capabilities: AdapterCapabilities = {
     beforeHooks: true,
@@ -66,6 +82,7 @@ class ClaudeCodeAdapter extends BaseAdapter {
       "session:start",
       "session:end",
       "prompt:submit",
+      "prompt:response",
       "tool:before",
       "tool:after",
       "file:read",
@@ -89,14 +106,11 @@ class ClaudeCodeAdapter extends BaseAdapter {
     ],
   };
 
-  async detect(): Promise<boolean> {
-    // Check for claude CLI command
-    const hasCommand = await this.commandExists("claude");
-
-    // Also check for .claude directory (may not have CLI but has project config)
-    const hasDir = existsSync(resolve(process.cwd(), ".claude"));
-
-    return hasCommand || hasDir;
+  async detect(cwd?: string): Promise<boolean> {
+    const dir = cwd ?? process.cwd();
+    const hasDir = existsSync(resolve(dir, ".claude"));
+    if (hasDir) return true;
+    return this.commandExists("claude");
   }
 
   async generate(hooks: HookDefinition[]): Promise<GeneratedConfig[]> {
@@ -111,6 +125,20 @@ class ClaudeCodeAdapter extends BaseAdapter {
     return configs;
   }
 
+  async import(cwd?: string): Promise<HookDefinition[]> {
+    const dir = cwd ?? process.cwd();
+    const imported: HookDefinition[] = [];
+    imported.push(
+      ...(await this.importSettingsFile(resolve(dir, SETTINGS_PATH), "claude-code")),
+      ...(await this.importSettingsFile(resolve(dir, LOCAL_SETTINGS_PATH), "claude-code")),
+    );
+    return imported;
+  }
+
+  async importUser(): Promise<HookDefinition[]> {
+    return this.importSettingsFile(this.userSettingsPath, "claude-code-user");
+  }
+
   mapEvent(event: HookEventType): string[] {
     return EVENT_MAP[event] ?? [];
   }
@@ -120,16 +148,16 @@ class ClaudeCodeAdapter extends BaseAdapter {
   }
 
   async uninstall(): Promise<void> {
-    await this.removeFile(".claude/hooks/ai-hooks-runner.js");
-    await this.removeFile(".claude/hooks/ai-tools-hooks-runner.js");
-    // Note: we don't remove settings.json as it may have other user config
+    await this.removeFile(LEGACY_RUNNER_PATH);
+    await this.removeFile(RUNNER_PATH);
+    await this.stripSettingsHooks();
   }
 
   // -- Private Methods ---------------------------------------------
 
   /**
    * Generate the hook runner script that Claude Code hooks call.
-   * This script loads the ai-hooks config and runs the appropriate chain.
+   * Delegates to `runClaudeCodeHook()` from `@itz4blitz/ai-tools-hooks`.
    */
   private generateRunner(): GeneratedConfig {
     const script = `#!/usr/bin/env node
@@ -137,177 +165,20 @@ class ClaudeCodeAdapter extends BaseAdapter {
  * ai-hooks runner for Claude Code.
  * Generated by: ai-hooks generate
  *
- * This script is called by Claude Code hooks. It loads your
- * ai-hooks.config.ts and runs the matching hook chain.
+ * Claude Code sends the hook event as JSON on stdin.
  *
  * DO NOT EDIT - regenerate with: ai-hooks generate
  */
+import { runClaudeCodeHook } from "@itz4blitz/ai-tools-hooks";
 
-import { loadConfig } from "@itz4blitz/ai-tools-hooks";
-import { HookEngine } from "@itz4blitz/ai-tools-hooks";
-
-const PROJECT_ROOT = "${resolve(process.cwd())}";
+const PROJECT_ROOT = ${JSON.stringify(resolve(process.cwd()))};
 process.chdir(PROJECT_ROOT);
 
-const hookEvent = process.env.CLAUDE_HOOK_EVENT;
-const toolName = process.env.CLAUDE_TOOL_NAME;
-const inputJson = process.env.CLAUDE_TOOL_INPUT;
-
-async function run() {
-  const config = await loadConfig();
-  const engine = new HookEngine(config);
-
-  // Build the event from Claude Code's environment variables
-  const event = buildEvent(hookEvent, toolName, inputJson);
-  if (!event) {
-    process.exit(0);
-  }
-
-  const toolInfo = { name: "claude-code", version: "1.0" };
-  const results = await engine.emit(event, toolInfo);
-
-  // Check for blocks
-  const blocked = results.find((r) => r.blocked);
-  if (blocked) {
-    // Claude Code reads stdout JSON for hook results, including Stop.
-    const output = JSON.stringify({
-      decision: "block",
-      reason: blocked.reason ?? "Blocked by ai-hooks",
-    });
-    process.stdout.write(output);
-    process.exit(0);
-  }
-
-  const note = results.find((r) => r.data && r.data.additionalContext);
-  if (note && (hookEvent === "UserPromptSubmit" || hookEvent === "SessionStart")) {
-    process.stdout.write(JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: hookEvent,
-        additionalContext: note.data.additionalContext,
-      },
-    }));
-  }
-
-  process.exit(0);
-}
-
-function buildEvent(hookEvent, toolName, inputJson) {
-  const timestamp = Date.now();
-  const metadata = {};
-
-  try {
-    const input = inputJson ? JSON.parse(inputJson) : {};
-
-    switch (hookEvent) {
-      case "PreToolUse":
-        return resolvePreToolUse(toolName, input, timestamp, metadata);
-      case "PostToolUse":
-        return resolvePostToolUse(toolName, input, timestamp, metadata);
-      case "SessionStart":
-        return {
-          type: "session:start",
-          tool: "claude-code",
-          version: "1.0",
-          workingDirectory: process.cwd(),
-          timestamp,
-          metadata,
-        };
-      case "UserPromptSubmit":
-        return {
-          type: "prompt:submit",
-          prompt: input.prompt ?? "",
-          timestamp,
-          metadata,
-        };
-      case "Stop":
-        return {
-          type: "session:end",
-          tool: "claude-code",
-          duration: 0,
-          timestamp,
-          metadata,
-        };
-      default:
-        return null;
-    }
-  } catch {
-    return null;
-  }
-}
-
-function resolvePreToolUse(toolName, input, timestamp, metadata) {
-  switch (toolName) {
-    case "Write":
-      return {
-        type: "file:write",
-        path: input.file_path ?? "",
-        content: input.content ?? "",
-        timestamp,
-        metadata,
-      };
-    case "Edit":
-      return {
-        type: "file:edit",
-        path: input.file_path ?? "",
-        oldContent: input.old_string ?? "",
-        newContent: input.new_string ?? "",
-        timestamp,
-        metadata,
-      };
-    case "Bash":
-      return {
-        type: "shell:before",
-        command: input.command ?? "",
-        cwd: process.cwd(),
-        timestamp,
-        metadata,
-      };
-    default:
-      return {
-        type: "tool:before",
-        toolName: toolName ?? "unknown",
-        input: input ?? {},
-        timestamp,
-        metadata,
-      };
-  }
-}
-
-function resolvePostToolUse(toolName, input, timestamp, metadata) {
-  switch (toolName) {
-    case "Bash":
-      return {
-        type: "shell:after",
-        command: input.command ?? "",
-        cwd: process.cwd(),
-        exitCode: input.exitCode ?? 0,
-        stdout: input.stdout ?? "",
-        stderr: input.stderr ?? "",
-        duration: 0,
-        timestamp,
-        metadata,
-      };
-    default:
-      return {
-        type: "tool:after",
-        toolName: toolName ?? "unknown",
-        input: input ?? {},
-        output: {},
-        duration: 0,
-        timestamp,
-        metadata,
-      };
-  }
-}
-
-run().catch((err) => {
-  console.error("[ai-hooks] Error:", err.message);
-  process.exit(1);
-});
+process.exit(await runClaudeCodeHook());
 `;
 
     return {
-      path: ".claude/hooks/ai-tools-hooks-runner.js",
+      path: RUNNER_PATH,
       content: script,
       format: "js",
       gitignore: false,
@@ -318,61 +189,34 @@ run().catch((err) => {
    * Generate the Claude Code settings.json hook entries.
    */
   private async generateSettings(hooks: HookDefinition[]): Promise<GeneratedConfig> {
-    // Read existing settings
-    const settingsPath = ".claude/settings.json";
-    let existing: Record<string, unknown> = {};
+    const fullPath = resolve(process.cwd(), SETTINGS_PATH);
+    const existing = await this.readJsonRecord(fullPath);
+    const neededEvents = collectNativeEvents(hooks, (event) => this.mapEvent(event));
 
-    const fullPath = resolve(process.cwd(), settingsPath);
-    if (existsSync(fullPath)) {
-      const raw = await readFile(fullPath, "utf-8");
-      existing = JSON.parse(raw);
-    }
-
-    // Determine which Claude Code hook events we need
-    const neededEvents = new Set<string>();
-    for (const hook of hooks) {
-      for (const event of hook.events) {
-        const nativeEvents = this.mapEvent(event);
-        for (const ne of nativeEvents) {
-          neededEvents.add(ne);
-        }
+    // Strip all stale ai-hooks entries across every existing hook event key
+    const existingHooks = asRecord(existing.hooks);
+    const mergedHooks: Record<string, unknown[]> = {};
+    for (const [event, entries] of Object.entries(existingHooks)) {
+      const kept = stripAiHooksEntries(entries);
+      if (kept.length > 0) {
+        mergedHooks[event] = kept;
       }
     }
 
-    // Build the hooks config
-    // neededEvents is a Set, so each native event is processed exactly once.
-    const hooksConfig: Record<string, unknown[]> = {};
-
+    // Add fresh ai-hooks entries for needed native events
     for (const event of neededEvents) {
       const hookEntry = {
         type: "command",
-        command: `node ${resolve(process.cwd(), ".claude/hooks/ai-tools-hooks-runner.js")}`,
+        command: RUNNER_COMMAND,
         timeout: 10,
         description: `ai-hooks: ${event}`,
       };
-
-      if (!hooksConfig[event]) {
-        hooksConfig[event] = [];
-      }
-      (hooksConfig[event] as unknown[]).push({
-        hooks: [hookEntry],
-      });
-    }
-
-    // Merge with existing settings (preserve non-ai-hooks entries)
-    const existingHooks = (existing.hooks ?? {}) as Record<string, unknown[]>;
-    const mergedHooks: Record<string, unknown[]> = { ...existingHooks };
-
-    for (const [event, entries] of Object.entries(hooksConfig)) {
       if (!mergedHooks[event]) {
         mergedHooks[event] = [];
       }
-      // Remove old ai-hooks entries
-      mergedHooks[event] = (
-        mergedHooks[event] as Array<{ hooks?: Array<{ description?: string }> }>
-      ).filter((entry) => !entry.hooks?.some((h) => h.description?.startsWith("ai-hooks:")));
-      // Add new ai-hooks entries
-      mergedHooks[event].push(...entries);
+      mergedHooks[event].push({
+        hooks: [hookEntry],
+      });
     }
 
     const mergedSettings = {
@@ -381,12 +225,87 @@ run().catch((err) => {
     };
 
     return {
-      path: settingsPath,
+      path: SETTINGS_PATH,
       content: JSON.stringify(mergedSettings, null, 2) + "\n",
       format: "json",
       gitignore: false,
     };
   }
+
+  private async stripSettingsHooks(): Promise<void> {
+    const fullPath = resolve(process.cwd(), SETTINGS_PATH);
+    if (!existsSync(fullPath)) return;
+    const existing = await this.readJsonRecord(fullPath);
+    if (Object.keys(existing).length === 0) return;
+
+    const existingHooks = asRecord(existing.hooks);
+    const strippedHooks: Record<string, unknown[]> = {};
+    for (const [event, entries] of Object.entries(existingHooks)) {
+      const kept = stripAiHooksEntries(entries);
+      if (kept.length > 0) {
+        strippedHooks[event] = kept;
+      }
+    }
+
+    const nextSettings = {
+      ...existing,
+      hooks: strippedHooks,
+    };
+    await this.writeJsonFile(SETTINGS_PATH, nextSettings);
+  }
+
+  private async importSettingsFile(fullPath: string, source: string): Promise<HookDefinition[]> {
+    const data = await this.readJsonRecord(fullPath);
+    const hooks = asRecord(data.hooks);
+    const imported: HookDefinition[] = [];
+    for (const [nativeEvent, groups] of Object.entries(hooks)) {
+      imported.push(
+        ...parseHookGroups(groups, nativeEvent, (event) => this.mapNativeEvent(event), source),
+      );
+    }
+    return imported;
+  }
+
+  private async readJsonRecord(fullPath: string): Promise<Record<string, unknown>> {
+    if (!existsSync(fullPath)) return {};
+    try {
+      const parsed: unknown = JSON.parse(await readFile(fullPath, "utf-8"));
+      return asRecord(parsed);
+    } catch {
+      return {};
+    }
+  }
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return {};
+}
+
+function isAiHooksCommand(hook: unknown): boolean {
+  const entry = asRecord(hook);
+  if (typeof entry.description === "string" && entry.description.startsWith("ai-hooks:")) {
+    return true;
+  }
+  if (
+    typeof entry.command === "string" &&
+    (entry.command.includes("ai-tools-hooks-runner.js") ||
+      entry.command.includes("ai-hooks-runner.js"))
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function stripAiHooksEntries(entries: unknown): unknown[] {
+  if (!Array.isArray(entries)) return [];
+  return entries.filter((entry) => {
+    const group = asRecord(entry);
+    if (!Array.isArray(group.hooks)) return true;
+    return !group.hooks.some((hook) => isAiHooksCommand(hook));
+  });
 }
 
 // Auto-register

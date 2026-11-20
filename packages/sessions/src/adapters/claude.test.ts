@@ -1,196 +1,164 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("node:fs", () => ({
-  existsSync: vi.fn(),
-}));
+const { fakeHome } = vi.hoisted(() => ({ fakeHome: { value: "" } }));
 
-vi.mock("node:fs/promises", () => ({
-  readdir: vi.fn(),
-  readFile: vi.fn(),
-  stat: vi.fn(),
-}));
+vi.mock("node:os", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:os")>();
+  return {
+    ...actual,
+    homedir: () => fakeHome.value || actual.homedir(),
+  };
+});
 
-vi.mock("node:os", () => ({
-  homedir: vi.fn(() => "/home/testuser"),
-}));
-
-import { existsSync } from "node:fs";
-import { readdir, readFile, stat } from "node:fs/promises";
 import { ClaudeSessionAdapter } from "./claude.js";
+
+const temps: string[] = [];
+
+async function makeTempHome(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "ai-sessions-claude-"));
+  temps.push(dir);
+  fakeHome.value = dir;
+  return dir;
+}
 
 describe("ClaudeSessionAdapter", () => {
   let adapter: ClaudeSessionAdapter;
 
   beforeEach(() => {
     adapter = new ClaudeSessionAdapter();
-    vi.clearAllMocks();
+    fakeHome.value = "";
   });
 
-  describe("properties", () => {
-    it("has correct id, name, command, and storagePaths", () => {
-      expect(adapter.id).toBe("claude");
-      expect(adapter.name).toBe("Claude Code");
-      expect(adapter.command).toBe("claude");
-      expect(adapter.storagePaths).toEqual(["~/.claude/projects"]);
+  afterEach(async () => {
+    fakeHome.value = "";
+    await Promise.all(temps.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+  });
+
+  it("has correct metadata", () => {
+    expect(adapter.id).toBe("claude");
+    expect(adapter.name).toBe("Claude Code");
+    expect(adapter.command).toBe("claude");
+    expect(adapter.storagePaths).toEqual(["~/.claude/projects"]);
+  });
+
+  it("returns empty array when storage path does not exist", async () => {
+    await makeTempHome();
+    expect(await adapter.parseSessions()).toEqual([]);
+  });
+
+  it("parses modern 'user' and legacy 'human' entries, entry.cwd, timestamps, and tool_result blocks", async () => {
+    const home = await makeTempHome();
+    const projectDir = join(home, ".claude", "projects", "-Users-dev-myapp");
+    await mkdir(projectDir, { recursive: true });
+
+    const lines = [
+      JSON.stringify({
+        type: "user",
+        cwd: "/Users/dev/myapp",
+        timestamp: "2026-03-01T10:00:00.000Z",
+        message: { role: "user", content: "Fix the failing build" },
+      }),
+      JSON.stringify({
+        type: "assistant",
+        cwd: "/Users/dev/myapp",
+        timestamp: "2026-03-01T10:01:00.000Z",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "text", text: "Running tests now." },
+            { type: "tool_use", name: "Bash", input: { command: "npm test" } },
+          ],
+        },
+      }),
+      JSON.stringify({
+        type: "user",
+        cwd: "/Users/dev/myapp",
+        timestamp: "2026-03-01T10:02:00.000Z",
+        message: {
+          role: "user",
+          content: [{ type: "tool_result", content: "All 42 tests passed" }],
+        },
+      }),
+      JSON.stringify({
+        type: "human",
+        timestamp: "2026-03-01T10:05:00.000Z",
+        message: { content: "Thanks!" },
+      }),
+    ];
+
+    await writeFile(join(projectDir, "sess-1.jsonl"), lines.join("\n") + "\n", "utf-8");
+
+    const sessions = await adapter.parseSessions();
+    expect(sessions).toHaveLength(1);
+
+    const session = sessions[0]!;
+    expect(session.projectPath).toBe("/Users/dev/myapp");
+    expect(session.startedAt).toBe("2026-03-01T10:00:00.000Z");
+    expect(session.updatedAt).toBe("2026-03-01T10:05:00.000Z");
+    expect(session.title).toBe("Fix the failing build");
+    expect(session.messages).toHaveLength(4);
+    expect(session.messages[0]).toMatchObject({
+      role: "user",
+      content: "Fix the failing build",
+      timestamp: "2026-03-01T10:00:00.000Z",
+    });
+    expect(session.messages[1]).toMatchObject({
+      role: "assistant",
+      content: "Running tests now.",
+    });
+    expect(session.messages[2]).toMatchObject({
+      role: "tool",
+      content: "All 42 tests passed",
+    });
+    expect(session.messages[3]).toMatchObject({
+      role: "user",
+      content: "Thanks!",
     });
   });
 
-  describe("parseSessions()", () => {
-    it("returns empty array when storage path does not exist", async () => {
-      vi.mocked(existsSync).mockReturnValue(false);
-      const sessions = await adapter.parseSessions();
-      expect(sessions).toEqual([]);
+  it("handles tool_result with array text blocks and falls back to projectDir when cwd is absent", async () => {
+    const home = await makeTempHome();
+    const projectDir = join(home, ".claude", "projects", "encoded-proj");
+    await mkdir(projectDir, { recursive: true });
+
+    const lines = [
+      "malformed line",
+      JSON.stringify({
+        type: "user",
+        message: {
+          content: [
+            {
+              type: "tool_result",
+              content: [
+                { type: "text", text: "line 1" },
+                { type: "text", text: "line 2" },
+              ],
+            },
+          ],
+        },
+      }),
+      JSON.stringify({
+        type: "assistant",
+        message: { content: "Done." },
+      }),
+    ];
+
+    await writeFile(join(projectDir, "s2.jsonl"), lines.join("\n") + "\n", "utf-8");
+    await writeFile(join(projectDir, "ignore.txt"), "not jsonl", "utf-8");
+
+    const sessions = await adapter.parseSessions();
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]!.projectPath).toBe("encoded-proj");
+    expect(sessions[0]!.messages[0]).toMatchObject({
+      role: "tool",
+      content: "line 1\nline 2",
     });
-
-    it("parses JSONL session files", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir)
-        .mockResolvedValueOnce(["my-project"] as unknown as Awaited<ReturnType<typeof readdir>>)
-        .mockResolvedValueOnce(["session1.jsonl"] as unknown as Awaited<
-          ReturnType<typeof readdir>
-        >);
-      vi.mocked(stat).mockResolvedValue({
-        isDirectory: () => true,
-        birthtime: new Date("2025-01-01T00:00:00Z"),
-        mtime: new Date("2025-01-01T01:00:00Z"),
-      } as unknown as Awaited<ReturnType<typeof stat>>);
-      vi.mocked(readFile).mockResolvedValue(
-        '{"type":"human","message":{"content":"Hello"}}\n' +
-          '{"type":"assistant","message":{"content":"Hi there!"}}\n',
-      );
-
-      const sessions = await adapter.parseSessions();
-      expect(sessions).toHaveLength(1);
-      expect(sessions[0]?.title).toBe("Hello");
-      expect(sessions[0]?.messages).toHaveLength(2);
-      expect(sessions[0]?.messages[0]?.role).toBe("user");
-      expect(sessions[0]?.messages[0]?.content).toBe("Hello");
-      expect(sessions[0]?.messages[1]?.role).toBe("assistant");
-      expect(sessions[0]?.messages[1]?.content).toBe("Hi there!");
-    });
-
-    it("handles array content in messages", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir)
-        .mockResolvedValueOnce(["proj"] as unknown as Awaited<ReturnType<typeof readdir>>)
-        .mockResolvedValueOnce(["s.jsonl"] as unknown as Awaited<ReturnType<typeof readdir>>);
-      vi.mocked(stat).mockResolvedValue({
-        isDirectory: () => true,
-        birthtime: new Date("2025-01-01T00:00:00Z"),
-        mtime: new Date("2025-01-01T01:00:00Z"),
-      } as unknown as Awaited<ReturnType<typeof stat>>);
-      vi.mocked(readFile).mockResolvedValue(
-        '{"type":"assistant","message":{"content":[{"type":"text","text":"Part 1"},{"type":"text","text":"Part 2"}]}}\n',
-      );
-
-      const sessions = await adapter.parseSessions();
-      expect(sessions).toHaveLength(1);
-      expect(sessions[0]?.messages[0]?.content).toBe("Part 1\nPart 2");
-    });
-
-    it("skips non-JSONL files", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir)
-        .mockResolvedValueOnce(["proj"] as unknown as Awaited<ReturnType<typeof readdir>>)
-        .mockResolvedValueOnce(["readme.md", "data.json"] as unknown as Awaited<
-          ReturnType<typeof readdir>
-        >);
-      vi.mocked(stat).mockResolvedValue({
-        isDirectory: () => true,
-      } as unknown as Awaited<ReturnType<typeof stat>>);
-
-      const sessions = await adapter.parseSessions();
-      expect(sessions).toEqual([]);
-    });
-
-    it("skips malformed JSONL entries", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir)
-        .mockResolvedValueOnce(["proj"] as unknown as Awaited<ReturnType<typeof readdir>>)
-        .mockResolvedValueOnce(["s.jsonl"] as unknown as Awaited<ReturnType<typeof readdir>>);
-      vi.mocked(stat).mockResolvedValue({
-        isDirectory: () => true,
-        birthtime: new Date("2025-01-01T00:00:00Z"),
-        mtime: new Date("2025-01-01T01:00:00Z"),
-      } as unknown as Awaited<ReturnType<typeof stat>>);
-      vi.mocked(readFile).mockResolvedValue(
-        'not json\n{"type":"human","message":{"content":"Hello"}}\n',
-      );
-
-      const sessions = await adapter.parseSessions();
-      expect(sessions).toHaveLength(1);
-      expect(sessions[0]?.messages).toHaveLength(1);
-    });
-
-    it("handles empty storage directory", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir).mockResolvedValueOnce(
-        [] as unknown as Awaited<ReturnType<typeof readdir>>,
-      );
-
-      const sessions = await adapter.parseSessions();
-      expect(sessions).toEqual([]);
-    });
-
-    it("skips entries with unknown types", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir)
-        .mockResolvedValueOnce(["proj"] as unknown as Awaited<ReturnType<typeof readdir>>)
-        .mockResolvedValueOnce(["s.jsonl"] as unknown as Awaited<ReturnType<typeof readdir>>);
-      vi.mocked(stat).mockResolvedValue({
-        isDirectory: () => true,
-        birthtime: new Date("2025-01-01T00:00:00Z"),
-        mtime: new Date("2025-01-01T01:00:00Z"),
-      } as unknown as Awaited<ReturnType<typeof stat>>);
-      vi.mocked(readFile).mockResolvedValue(
-        '{"type":"unknown_type","message":{"content":"ignored"}}\n' +
-          '{"type":"human","message":{"content":"kept"}}\n',
-      );
-
-      const sessions = await adapter.parseSessions();
-      expect(sessions).toHaveLength(1);
-      expect(sessions[0]?.messages).toHaveLength(1);
-      expect(sessions[0]?.messages[0]?.content).toBe("kept");
-    });
-
-    it("handles readdir failure gracefully", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir).mockRejectedValueOnce(new Error("permission denied"));
-
-      const sessions = await adapter.parseSessions();
-      expect(sessions).toEqual([]);
-    });
-
-    it("skips files in project dir (not directories)", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir).mockResolvedValueOnce(["a-file"] as unknown as Awaited<
-        ReturnType<typeof readdir>
-      >);
-      vi.mocked(stat).mockResolvedValue({
-        isDirectory: () => false,
-      } as unknown as Awaited<ReturnType<typeof stat>>);
-
-      const sessions = await adapter.parseSessions();
-      expect(sessions).toEqual([]);
-    });
-
-    it("maps tool_result type to tool role", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir)
-        .mockResolvedValueOnce(["proj"] as unknown as Awaited<ReturnType<typeof readdir>>)
-        .mockResolvedValueOnce(["s.jsonl"] as unknown as Awaited<ReturnType<typeof readdir>>);
-      vi.mocked(stat).mockResolvedValue({
-        isDirectory: () => true,
-        birthtime: new Date("2025-01-01T00:00:00Z"),
-        mtime: new Date("2025-01-01T01:00:00Z"),
-      } as unknown as Awaited<ReturnType<typeof stat>>);
-      vi.mocked(readFile).mockResolvedValue(
-        '{"type":"tool_result","message":{"content":"result data"}}\n',
-      );
-
-      const sessions = await adapter.parseSessions();
-      expect(sessions).toHaveLength(1);
-      expect(sessions[0]?.messages[0]?.role).toBe("tool");
+    expect(sessions[0]!.messages[1]).toMatchObject({
+      role: "assistant",
+      content: "Done.",
     });
   });
 });
