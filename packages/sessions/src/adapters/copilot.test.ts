@@ -1,166 +1,198 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("node:fs", () => ({
-  existsSync: vi.fn(),
-}));
+let mockHomeDir = "";
 
-vi.mock("node:fs/promises", () => ({
-  readdir: vi.fn(),
-  readFile: vi.fn(),
-  stat: vi.fn(),
-}));
+vi.mock("node:os", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:os")>();
+  return {
+    ...actual,
+    homedir: () => mockHomeDir || actual.homedir(),
+  };
+});
 
-vi.mock("node:os", () => ({
-  homedir: vi.fn(() => "/home/testuser"),
-}));
-
-import { existsSync } from "node:fs";
-import { readdir, readFile, stat } from "node:fs/promises";
-import { CopilotSessionAdapter } from "./copilot.js";
+import { CopilotSessionAdapter, resolveVsCodeWorkspaceStoragePath } from "./copilot.js";
 
 describe("CopilotSessionAdapter", () => {
   let adapter: CopilotSessionAdapter;
+  let tempHome: string;
+  let originalAppData: string | undefined;
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    tempHome = await mkdtemp(join(tmpdir(), "ai-tools-copilot-sessions-"));
+    mockHomeDir = tempHome;
+    originalAppData = process.env.APPDATA;
+    process.env.APPDATA = join(tempHome, "AppData", "Roaming");
     adapter = new CopilotSessionAdapter();
-    vi.clearAllMocks();
   });
 
-  describe("properties", () => {
-    it("has correct id, name, command, and storagePaths", () => {
+  afterEach(async () => {
+    if (originalAppData === undefined) {
+      delete process.env.APPDATA;
+    } else {
+      process.env.APPDATA = originalAppData;
+    }
+    mockHomeDir = "";
+    await rm(tempHome, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+
+  describe("properties & detect", () => {
+    it("has updated command and storagePaths", () => {
       expect(adapter.id).toBe("copilot");
       expect(adapter.name).toBe("GitHub Copilot");
-      expect(adapter.command).toBe("github-copilot-cli");
-      expect(adapter.storagePaths).toEqual(["~/.config/github-copilot"]);
+      expect(adapter.command).toBe("copilot");
+      expect(adapter.storagePaths).toContain("~/.copilot/session-state");
+      expect(adapter.storagePaths).toContain("~/.config/github-copilot");
+    });
+
+    it("resolves OS-specific VS Code workspaceStorage paths", () => {
+      expect(
+        resolveVsCodeWorkspaceStoragePath("win32", { APPDATA: "C:\\AppData" }, "C:\\Users\\dev"),
+      ).toBe(join("C:\\AppData", "Code", "User", "workspaceStorage"));
+      expect(resolveVsCodeWorkspaceStoragePath("darwin", {}, "/Users/dev")).toBe(
+        join("/Users/dev", "Library", "Application Support", "Code", "User", "workspaceStorage"),
+      );
+      expect(resolveVsCodeWorkspaceStoragePath("linux", {}, "/home/dev")).toBe(
+        join("/home/dev", ".config", "Code", "User", "workspaceStorage"),
+      );
+    });
+
+    it("detects copilot CLI and falls back to gh", async () => {
+      const spy = vi
+        .spyOn(
+          adapter as unknown as { commandExists: (cmd: string) => Promise<boolean> },
+          "commandExists",
+        )
+        .mockImplementation(async (cmd) => cmd === "gh");
+
+      expect(await adapter.detect()).toBe(true);
+      expect(spy).toHaveBeenCalledWith("copilot");
+      expect(spy).toHaveBeenCalledWith("gh");
     });
   });
 
   describe("parseSessions()", () => {
-    it("returns empty array when storage path does not exist", async () => {
-      vi.mocked(existsSync).mockReturnValue(false);
-      const sessions = await adapter.parseSessions();
-      expect(sessions).toEqual([]);
+    it("returns empty array when no storage directories exist", async () => {
+      expect(await adapter.parseSessions()).toEqual([]);
     });
 
-    it("parses JSON session files with turns", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir).mockResolvedValueOnce(["session.json"] as unknown as Awaited<
-        ReturnType<typeof readdir>
-      >);
-      vi.mocked(stat).mockResolvedValue({
-        birthtime: new Date("2025-01-01T00:00:00Z"),
-        mtime: new Date("2025-01-01T01:00:00Z"),
-      } as unknown as Awaited<ReturnType<typeof stat>>);
-      vi.mocked(readFile).mockResolvedValue(
-        JSON.stringify({
-          id: "cp-123",
-          turns: [
-            { role: "user", content: "Help me fix this" },
-            { role: "copilot", content: "Sure, let me help" },
-          ],
-          createdAt: "2025-01-01T00:00:00Z",
-          updatedAt: "2025-01-01T01:00:00Z",
-        }),
+    it("parses ~/.copilot/session-state/*/events.jsonl", async () => {
+      const sessionDir = join(tempHome, ".copilot", "session-state", "sess-cli-1");
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(
+        join(sessionDir, "events.jsonl"),
+        [
+          JSON.stringify({
+            type: "session.start",
+            data: {
+              sessionId: "cli-001",
+              startTime: "2026-01-10T10:00:00.000Z",
+              context: { cwd: "/repo/project" },
+            },
+          }),
+          JSON.stringify({
+            type: "user.message",
+            data: { content: "Explain this error" },
+            timestamp: "2026-01-10T10:00:05.000Z",
+          }),
+          JSON.stringify({
+            type: "assistant.message",
+            data: { content: "Here is the root cause." },
+            timestamp: "2026-01-10T10:00:10.000Z",
+          }),
+        ].join("\n"),
       );
 
       const sessions = await adapter.parseSessions();
       expect(sessions).toHaveLength(1);
-      expect(sessions[0]?.id).toBe("cp-123");
-      expect(sessions[0]?.messages).toHaveLength(2);
+      expect(sessions[0]).toMatchObject({
+        id: "cli-001",
+        tool: "copilot",
+        projectPath: "/repo/project",
+        messageCount: 2,
+      });
       expect(sessions[0]?.messages[0]?.role).toBe("user");
       expect(sessions[0]?.messages[1]?.role).toBe("assistant");
     });
 
-    it("parses JSON session files with messages array", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir).mockResolvedValueOnce(["s.json"] as unknown as Awaited<
-        ReturnType<typeof readdir>
-      >);
-      vi.mocked(stat).mockResolvedValue({
-        birthtime: new Date("2025-01-01T00:00:00Z"),
-        mtime: new Date("2025-01-01T01:00:00Z"),
-      } as unknown as Awaited<ReturnType<typeof stat>>);
-      vi.mocked(readFile).mockResolvedValue(
+    it("parses VS Code workspaceStorage/*/chatSessions/*.json and *.jsonl", async () => {
+      const wsDir = join(resolveVsCodeWorkspaceStoragePath(), "ws-hash-1", "chatSessions");
+      await mkdir(wsDir, { recursive: true });
+
+      await writeFile(
+        join(wsDir, "chat-1.json"),
         JSON.stringify({
-          messages: [{ role: "user", content: "Hello" }],
+          sessionId: "vscode-json-1",
+          customTitle: "Refactor auth",
+          creationDate: 1736500000000,
+          lastMessageDate: 1736500100000,
+          requests: [
+            {
+              message: { text: "Refactor auth middleware" },
+              response: [{ value: "Sure, let's split it up." }],
+              timestamp: 1736500050000,
+            },
+          ],
+        }),
+      );
+
+      await writeFile(
+        join(wsDir, "chat-2.jsonl"),
+        [
+          JSON.stringify({
+            kind: 0,
+            v: {
+              sessionId: "vscode-jsonl-2",
+              customTitle: "Debug build",
+              creationDate: 1736500200000,
+              lastMessageDate: 1736500300000,
+              requests: [
+                {
+                  message: { text: "Why does vite fail?" },
+                  response: [{ value: "Missing dependency." }],
+                },
+              ],
+            },
+          }),
+        ].join("\n"),
+      );
+
+      const sessions = await adapter.parseSessions();
+      expect(sessions).toHaveLength(2);
+      expect(sessions.find((s) => s.id === "vscode-json-1")).toMatchObject({
+        title: "Refactor auth",
+        messageCount: 2,
+      });
+      expect(sessions.find((s) => s.id === "vscode-jsonl-2")).toMatchObject({
+        title: "Debug build",
+        messageCount: 2,
+      });
+    });
+
+    it("parses legacy ~/.config/github-copilot/*.json alongside new locations", async () => {
+      const legacyDir = join(tempHome, ".config", "github-copilot");
+      await mkdir(legacyDir, { recursive: true });
+      await writeFile(
+        join(legacyDir, "legacy.json"),
+        JSON.stringify({
+          id: "cp-legacy-1",
+          turns: [
+            { role: "user", content: "Help me fix this" },
+            { role: "copilot", content: "Sure, let me help" },
+          ],
+          createdAt: "2025-01-01T00:00:00.000Z",
+          updatedAt: "2025-01-01T01:00:00.000Z",
         }),
       );
 
       const sessions = await adapter.parseSessions();
       expect(sessions).toHaveLength(1);
-      expect(sessions[0]?.messages).toHaveLength(1);
-    });
-
-    it("uses file stats when session has no dates", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir).mockResolvedValueOnce(["s.json"] as unknown as Awaited<
-        ReturnType<typeof readdir>
-      >);
-      vi.mocked(stat).mockResolvedValue({
-        birthtime: new Date("2025-06-15T00:00:00Z"),
-        mtime: new Date("2025-06-15T12:00:00Z"),
-      } as unknown as Awaited<ReturnType<typeof stat>>);
-      vi.mocked(readFile).mockResolvedValue(
-        JSON.stringify({
-          turns: [{ role: "user", content: "Test" }],
-        }),
-      );
-
-      const sessions = await adapter.parseSessions();
-      expect(sessions).toHaveLength(1);
-      expect(sessions[0]?.startedAt).toBe("2025-06-15T00:00:00.000Z");
-    });
-
-    it("skips non-JSON files", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir).mockResolvedValueOnce(["config.yaml", "notes.txt"] as unknown as Awaited<
-        ReturnType<typeof readdir>
-      >);
-
-      const sessions = await adapter.parseSessions();
-      expect(sessions).toEqual([]);
-    });
-
-    it("handles readdir failure gracefully", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir).mockRejectedValueOnce(new Error("EACCES"));
-
-      const sessions = await adapter.parseSessions();
-      expect(sessions).toEqual([]);
-    });
-
-    it("generates id from filename when session has no id", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir).mockResolvedValueOnce(["my-session.json"] as unknown as Awaited<
-        ReturnType<typeof readdir>
-      >);
-      vi.mocked(stat).mockResolvedValue({
-        birthtime: new Date("2025-01-01T00:00:00Z"),
-        mtime: new Date("2025-01-01T01:00:00Z"),
-      } as unknown as Awaited<ReturnType<typeof stat>>);
-      vi.mocked(readFile).mockResolvedValue(
-        JSON.stringify({
-          turns: [{ role: "user", content: "Hello" }],
-        }),
-      );
-
-      const sessions = await adapter.parseSessions();
-      expect(sessions[0]?.id).toBe("copilot-my-session");
-    });
-
-    it("skips files with no parseable messages", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir).mockResolvedValueOnce(["empty.json"] as unknown as Awaited<
-        ReturnType<typeof readdir>
-      >);
-      vi.mocked(stat).mockResolvedValue({
-        birthtime: new Date("2025-01-01T00:00:00Z"),
-        mtime: new Date("2025-01-01T01:00:00Z"),
-      } as unknown as Awaited<ReturnType<typeof stat>>);
-      vi.mocked(readFile).mockResolvedValue(JSON.stringify({}));
-
-      const sessions = await adapter.parseSessions();
-      expect(sessions).toEqual([]);
+      expect(sessions[0]?.id).toBe("cp-legacy-1");
+      expect(sessions[0]?.messages).toHaveLength(2);
+      expect(sessions[0]?.messages[1]?.role).toBe("assistant");
     });
   });
 });

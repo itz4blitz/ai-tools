@@ -101,12 +101,12 @@ export const KNOWN_PLUGIN_HOSTS: Record<string, PluginHostInfo> = {
   copilot: {
     id: "copilot",
     name: "VS Code / Copilot",
-    kind: "desktop",
-    nativeEngineSupport: { mcp: true, skills: true, rules: true, agents: true, hooks: false },
+    kind: "hybrid",
+    nativeEngineSupport: { mcp: true, skills: true, rules: true, agents: true, hooks: true },
     supportsInteractiveApps: false,
     supportsNativeBundles: false,
     notes:
-      "Copilot can consume MCP and prompt surfaces through the IDE, but ai-tools currently treats it as direct engine deployment.",
+      "GitHub Copilot supports MCP (.vscode/mcp.json and VS Code user mcp.json), skills (.github/skills and ~/.copilot/skills), instructions (.github/instructions), custom agents (.github/agents/*.agent.md), and hooks (.github/hooks) across VS Code and the Copilot CLI.",
   },
   kiro: {
     id: "kiro",

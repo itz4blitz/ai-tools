@@ -1,81 +1,159 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-
-vi.mock("./registry.js", () => ({ registry: { register: vi.fn() } }));
-vi.mock("node:fs", () => ({ existsSync: vi.fn(() => false) }));
-vi.mock("node:fs/promises", () => ({
-  readFile: vi.fn(),
-  readdir: vi.fn(),
-  writeFile: vi.fn(),
-  mkdir: vi.fn(),
-  rm: vi.fn(),
-}));
-
 import { existsSync } from "node:fs";
-import { readFile, readdir } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CopilotRuleAdapter } from "./copilot.js";
 
 describe("CopilotRuleAdapter", () => {
   let adapter: CopilotRuleAdapter;
+  let tempDir: string;
 
-  beforeEach(() => {
-    vi.clearAllMocks();
+  beforeEach(async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "ai-tools-copilot-rules-"));
     adapter = new CopilotRuleAdapter();
   });
 
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
   describe("metadata", () => {
-    it("has correct id", () => expect(adapter.id).toBe("copilot"));
-    it("has correct name", () => expect(adapter.name).toBe("Copilot"));
-    it("has correct configDir", () => expect(adapter.configDir).toBe(".github/instructions"));
+    it("has expected metadata", () => {
+      expect(adapter.id).toBe("copilot");
+      expect(adapter.name).toBe("Copilot");
+      expect(adapter.nativeSupport).toBe(true);
+      expect(adapter.configDir).toBe(".github/instructions");
+      expect(adapter.command).toBe("copilot");
+    });
   });
 
   describe("generate", () => {
-    it("generates files at correct path", async () => {
+    it("emits .instructions.md with applyTo: ** for always scope", async () => {
       const files = await adapter.generate([
-        { id: "test", name: "Test", content: "Content", scope: { type: "always" } },
+        {
+          id: "general",
+          name: "General Rules",
+          description: "Applies everywhere",
+          content: "Write clean code.",
+          scope: { type: "always" },
+        },
       ]);
-      expect(files[0].path).toBe(".github/instructions/test.md");
+
+      expect(files).toHaveLength(1);
+      expect(files[0]?.path).toBe(".github/instructions/general.instructions.md");
+      expect(files[0]?.content).toContain('applyTo: "**"');
+      expect(files[0]?.content).toContain("description: Applies everywhere");
+      expect(files[0]?.content).toContain("# General Rules");
+      expect(files[0]?.content).toContain("Write clean code.");
     });
 
-    it("handles empty rules", async () => {
-      expect(await adapter.generate([])).toHaveLength(0);
+    it("emits comma-separated patterns in applyTo for glob scope", async () => {
+      const files = await adapter.generate([
+        {
+          id: "typescript",
+          name: "TypeScript",
+          content: "Use strict types.",
+          scope: { type: "glob", patterns: ["**/*.ts", "**/*.tsx"] },
+        },
+      ]);
+
+      expect(files[0]?.path).toBe(".github/instructions/typescript.instructions.md");
+      expect(files[0]?.content).toContain('applyTo: "**/*.ts,**/*.tsx"');
+    });
+
+    it("handles empty rules array", async () => {
+      expect(await adapter.generate([])).toEqual([]);
     });
   });
 
-  describe("import", () => {
-    it("returns empty when dir missing", async () => {
-      vi.mocked(existsSync).mockReturnValue(false);
-      expect(await adapter.import("/test")).toEqual([]);
+  describe("install, import, and uninstall", () => {
+    it("round-trips always and glob rules in a real temp dir", async () => {
+      const files = await adapter.generate([
+        {
+          id: "general",
+          name: "General",
+          content: "Always apply.",
+          scope: { type: "always" },
+        },
+        {
+          id: "ts",
+          name: "TS Rules",
+          description: "TypeScript guidelines",
+          content: "No any.",
+          scope: { type: "glob", patterns: ["**/*.ts", "**/*.tsx"] },
+        },
+      ]);
+      await adapter.install(files, tempDir);
+
+      const imported = await adapter.import(tempDir);
+      expect(imported).toHaveLength(2);
+
+      const general = imported.find((r) => r.id === "general");
+      expect(general).toMatchObject({
+        id: "general",
+        name: "General",
+        content: "Always apply.",
+        scope: { type: "always" },
+      });
+
+      const ts = imported.find((r) => r.id === "ts");
+      expect(ts).toMatchObject({
+        id: "ts",
+        name: "TS Rules",
+        description: "TypeScript guidelines",
+        content: "No any.",
+        scope: { type: "glob", patterns: ["**/*.ts", "**/*.tsx"] },
+      });
     });
 
-    it("imports rules", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir).mockResolvedValue(["rule.md"] as never);
-      vi.mocked(readFile).mockResolvedValue("# My Rule\n\nContent here.");
-      const result = await adapter.import("/test");
-      expect(result[0].name).toBe("My Rule");
+    it("imports .github/copilot-instructions.md and handles CRLF frontmatter", async () => {
+      await mkdir(join(tempDir, ".github/instructions"), { recursive: true });
+      await writeFile(
+        join(tempDir, ".github/copilot-instructions.md"),
+        "# Repo Instructions\r\n\r\nFollow repo conventions.\r\n",
+      );
+      await writeFile(
+        join(tempDir, ".github/instructions/win.instructions.md"),
+        '---\r\napplyTo: "src/**/*.ts"\r\n---\r\n\r\nUse ESM imports.\r\n',
+      );
+
+      const imported = await adapter.import(tempDir);
+      expect(imported).toHaveLength(2);
+
+      const repoRule = imported.find((r) => r.id === "copilot-instructions");
+      expect(repoRule).toEqual({
+        id: "copilot-instructions",
+        name: "Repo Instructions",
+        content: "Follow repo conventions.",
+        scope: { type: "always" },
+      });
+
+      const winRule = imported.find((r) => r.id === "win");
+      expect(winRule).toEqual({
+        id: "win",
+        name: "win",
+        content: "Use ESM imports.",
+        scope: { type: "glob", patterns: ["src/**/*.ts"] },
+      });
     });
 
-    it("skips non-markdown files", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir).mockResolvedValue(["readme.txt", "rule.md"] as never);
-      vi.mocked(readFile).mockResolvedValue("# Skill\n\nContent");
-      const result = await adapter.import("/test");
-      expect(result).toHaveLength(1);
+    it("returns empty array when neither file nor dir exists", async () => {
+      expect(await adapter.import(tempDir)).toEqual([]);
     });
 
-    it("imports rule without heading", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir).mockResolvedValue(["plain.md"] as never);
-      vi.mocked(readFile).mockResolvedValue("Just content, no heading");
-      const result = await adapter.import("/test");
-      expect(result[0].name).toBe("plain");
-      expect(result[0].content).toBe("Just content, no heading");
-    });
+    it("uninstalls .instructions.md files without touching copilot-instructions.md", async () => {
+      const files = await adapter.generate([
+        { id: "general", name: "General", content: "Body", scope: { type: "always" } },
+      ]);
+      await adapter.install(files, tempDir);
+      const repoInstructions = join(tempDir, ".github/copilot-instructions.md");
+      await writeFile(repoInstructions, "# Keep me\n\nUser repo instructions.");
 
-    it("imports without cwd argument", async () => {
-      vi.mocked(existsSync).mockReturnValue(false);
-      const result = await adapter.import();
-      expect(result).toEqual([]);
+      await adapter.uninstall(tempDir);
+      expect(existsSync(join(tempDir, ".github/instructions/general.instructions.md"))).toBe(false);
+      expect(existsSync(join(tempDir, ".github/instructions"))).toBe(false);
+      expect(existsSync(repoInstructions)).toBe(true);
     });
   });
 });

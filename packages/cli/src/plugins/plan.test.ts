@@ -22,7 +22,7 @@ const mockRegistries = {
     detectAll: async () => [{ id: "cursor" }, { id: "codex" }],
   },
   hooks: {
-    list: () => ["cursor", "codex", "opencode", "claude-code"],
+    list: () => ["cursor", "codex", "opencode", "claude-code", "copilot"],
     get: () => undefined,
     detectAll: async () => [{ id: "cursor" }, { id: "codex" }],
   },
@@ -206,5 +206,33 @@ describe("buildPluginInstallPlan", () => {
     expect(plan.targets[0]?.engines.find((item) => item.engine === "mcp")?.status).toBe(
       "host-unsupported",
     );
+  });
+
+  it("marks Copilot hooks as ready once the adapter exists", async () => {
+    const plan = await buildPluginInstallPlan(
+      {
+        id: "cert-coach",
+        name: "Certification Coach",
+        version: "0.1.0",
+        hooks: [
+          {
+            id: "audit",
+            name: "Audit",
+            events: ["prompt:submit"],
+            phase: "before",
+            handler: async () => {},
+          },
+        ],
+      },
+      {
+        tools: ["copilot"],
+        force: true,
+        detectedToolsOverride: ["copilot"],
+      },
+    );
+
+    const target = plan.targets[0];
+    expect(target?.host.kind).toBe("hybrid");
+    expect(target?.engines.find((item) => item.engine === "hooks")?.status).toBe("ready");
   });
 });

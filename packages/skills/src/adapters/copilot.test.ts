@@ -1,120 +1,132 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-
-vi.mock("./registry.js", () => ({
-  registry: { register: vi.fn() },
-}));
-
-vi.mock("node:fs", () => ({
-  existsSync: vi.fn(() => false),
-}));
-
-vi.mock("node:fs/promises", () => ({
-  readFile: vi.fn(),
-  readdir: vi.fn(),
-  writeFile: vi.fn(),
-  mkdir: vi.fn(),
-  rm: vi.fn(),
-}));
-
 import { existsSync } from "node:fs";
-import { readFile, readdir } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CopilotSkillAdapter } from "./copilot.js";
 import type { SkillDefinition } from "../types/index.js";
 
 describe("CopilotSkillAdapter", () => {
   let adapter: CopilotSkillAdapter;
+  let tempDir: string;
 
   const testSkill: SkillDefinition = {
     id: "review",
     name: "Code Review",
     description: "Review code for best practices",
-    content:
-      "Please review the selected code for:\n- Security issues\n- Performance\n- Best practices",
+    content: "Please review the selected code for security and performance.",
   };
 
-  beforeEach(() => {
-    vi.clearAllMocks();
+  beforeEach(async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "ai-tools-copilot-skills-"));
     adapter = new CopilotSkillAdapter();
   });
 
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
   describe("metadata", () => {
-    it("has correct id", () => expect(adapter.id).toBe("copilot"));
-    it("has correct name", () => expect(adapter.name).toBe("Copilot"));
-    it("has native support", () => expect(adapter.nativeSupport).toBe(true));
-    it("has correct config dir", () => expect(adapter.configDir).toBe(".github/skills"));
+    it("has expected metadata and userConfigDir", () => {
+      expect(adapter.id).toBe("copilot");
+      expect(adapter.name).toBe("Copilot");
+      expect(adapter.nativeSupport).toBe(true);
+      expect(adapter.configDir).toBe(".github/skills");
+      expect(adapter.userConfigDir).toBe(".copilot/skills");
+      expect(adapter.command).toBe("copilot");
+    });
   });
 
   describe("generate", () => {
-    it("generates one file per skill", async () => {
+    it("generates folder-based SKILL.md with YAML frontmatter for project layer", async () => {
       const files = await adapter.generate([testSkill]);
       expect(files).toHaveLength(1);
-      expect(files[0]?.path).toBe(".github/skills/review.md");
+      expect(files[0]?.path).toBe(".github/skills/review/SKILL.md");
       expect(files[0]?.format).toBe("md");
+      expect(files[0]?.content).toContain(
+        "---\nname: review\ndescription: Review code for best practices\n---",
+      );
+      expect(files[0]?.content).toContain("Please review the selected code");
     });
 
-    it("formats skill with name heading and content", async () => {
-      const files = await adapter.generate([testSkill]);
-      expect(files[0]?.content).toContain("# Code Review");
-      expect(files[0]?.content).toContain("Review code for best practices");
-      expect(files[0]?.content).toContain("Security issues");
+    it("generates under .copilot/skills for user layer", async () => {
+      const files = await adapter.generate([testSkill], "user");
+      expect(files[0]?.path).toBe(".copilot/skills/review/SKILL.md");
     });
 
-    it("handles empty skills array", async () => {
-      const files = await adapter.generate([]);
-      expect(files).toHaveLength(0);
+    it("falls back to skill.name for description when omitted", async () => {
+      const files = await adapter.generate([{ id: "lint", name: "Lint", content: "Run lint." }]);
+      expect(files[0]?.content).toContain("description: Lint");
     });
 
-    it("handles multiple skills", async () => {
-      const skills = [testSkill, { ...testSkill, id: "debug", name: "Debug" }];
-      const files = await adapter.generate(skills);
-      expect(files).toHaveLength(2);
-    });
+    it("copies full skill folder when sourceDir is provided", async () => {
+      const srcDir = join(tempDir, "src-skill");
+      await mkdir(join(srcDir, "references"), { recursive: true });
+      await writeFile(
+        join(srcDir, "SKILL.md"),
+        "---\nname: custom\ndescription: Custom\n---\n\nBody\n",
+      );
+      await writeFile(join(srcDir, "references", "guide.md"), "Guide content");
 
-    it("handles skill without description", async () => {
-      const skill: SkillDefinition = { id: "test", name: "Test", content: "Content here" };
-      const files = await adapter.generate([skill]);
-      expect(files[0]?.content).toBe("# Test\n\nContent here\n");
+      const files = await adapter.generate([
+        { id: "custom", name: "Custom", content: "Body", sourceDir: srcDir },
+      ]);
+
+      expect(files.map((f) => f.path).toSorted()).toEqual([
+        ".github/skills/custom/SKILL.md",
+        ".github/skills/custom/references/guide.md",
+      ]);
     });
   });
 
-  describe("import", () => {
-    it("returns empty array when dir does not exist", async () => {
-      vi.mocked(existsSync).mockReturnValue(false);
-      const result = await adapter.import("/test");
-      expect(result).toEqual([]);
+  describe("install, import, and uninstall", () => {
+    it("round-trips generated skills in a real temp dir", async () => {
+      const files = await adapter.generate([testSkill]);
+      await adapter.install(files, tempDir);
+
+      const imported = await adapter.import(tempDir);
+      expect(imported).toHaveLength(1);
+      expect(imported[0]).toEqual({
+        id: "review",
+        name: "review",
+        description: "Review code for best practices",
+        content: "Please review the selected code for security and performance.",
+      });
     });
 
-    it("imports skills from markdown files", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir).mockResolvedValue(["review.md"] as never);
-      vi.mocked(readFile).mockResolvedValue("# Code Review\n\nReview the code");
-      const result = await adapter.import("/test");
-      expect(result).toHaveLength(1);
-      expect(result[0]?.id).toBe("review");
-      expect(result[0]?.name).toBe("Code Review");
+    it("parses SKILL.md with CRLF line endings", async () => {
+      const skillDir = join(tempDir, ".github/skills/win-skill");
+      await mkdir(skillDir, { recursive: true });
+      await writeFile(
+        join(skillDir, "SKILL.md"),
+        "---\r\nname: win-skill\r\ndescription: Windows skill\r\n---\r\n\r\nLine 1\r\nLine 2\r\n",
+      );
+
+      const imported = await adapter.import(tempDir);
+      expect(imported).toHaveLength(1);
+      expect(imported[0]?.id).toBe("win-skill");
+      expect(imported[0]?.description).toBe("Windows skill");
+      expect(imported[0]?.content).toBe("Line 1\r\nLine 2");
     });
 
-    it("skips non-markdown files", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir).mockResolvedValue(["readme.txt", "skill.md"] as never);
-      vi.mocked(readFile).mockResolvedValue("# Skill\n\nContent");
-      const result = await adapter.import("/test");
-      expect(result).toHaveLength(1);
+    it("skips directories without SKILL.md and returns empty when dir missing", async () => {
+      expect(await adapter.import(tempDir)).toEqual([]);
+
+      await mkdir(join(tempDir, ".github/skills/empty-dir"), { recursive: true });
+      await writeFile(join(tempDir, ".github/skills/stray.md"), "# Stray");
+      expect(await adapter.import(tempDir)).toEqual([]);
     });
 
-    it("imports skill without heading", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir).mockResolvedValue(["plain.md"] as never);
-      vi.mocked(readFile).mockResolvedValue("Just content, no heading");
-      const result = await adapter.import("/test");
-      expect(result[0]?.name).toBe("plain");
-      expect(result[0]?.content).toBe("Just content, no heading");
-    });
+    it("uninstalls skill folders and preserves unrelated files", async () => {
+      const files = await adapter.generate([testSkill]);
+      await adapter.install(files, tempDir);
+      const skillFile = join(tempDir, ".github/skills/review/SKILL.md");
+      expect(existsSync(skillFile)).toBe(true);
+      expect(await readFile(skillFile, "utf-8")).toContain("review");
 
-    it("imports without cwd argument", async () => {
-      vi.mocked(existsSync).mockReturnValue(false);
-      const result = await adapter.import();
-      expect(result).toEqual([]);
+      await adapter.uninstall(tempDir);
+      expect(existsSync(skillFile)).toBe(false);
+      expect(existsSync(join(tempDir, ".github/skills"))).toBe(false);
     });
   });
 });
