@@ -1,13 +1,14 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 
 import { BaseMCPAdapter } from "./base.js";
+import { fromMcpServersMap, mergeMcpServersJson, type McpServersMap } from "./mcp-servers-json.js";
 import { registry } from "./registry.js";
 import type { GeneratedFile, MCPServerDefinition } from "../types/index.js";
 
-function resolveClaudeDesktopConfigPath(cwd?: string): string | null {
+function resolveClaudeDesktopConfigPath(): string | null {
   if (process.platform === "darwin") {
     return join(
       homedir(),
@@ -19,12 +20,13 @@ function resolveClaudeDesktopConfigPath(cwd?: string): string | null {
   }
 
   if (process.platform === "win32") {
-    const appData = process.env.APPDATA ?? join(homedir(), "AppData", "Roaming");
+    const appData = process.env.APPDATA || join(homedir(), "AppData", "Roaming");
     return join(appData, "Claude", "claude_desktop_config.json");
   }
 
-  if (cwd) {
-    return resolve(cwd, "claude_desktop_config.json");
+  if (process.platform === "linux") {
+    const xdgConfigHome = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
+    return join(xdgConfigHome, "Claude", "claude_desktop_config.json");
   }
 
   return null;
@@ -35,6 +37,8 @@ class ClaudeDesktopMCPAdapter extends BaseMCPAdapter {
   readonly name = "Claude Desktop";
   readonly nativeSupport = true;
   readonly configPath = "claude_desktop_config.json";
+  readonly userConfigPath = resolveClaudeDesktopConfigPath() ?? undefined;
+  readonly scope = "user-only" as const;
 
   async generate(servers: MCPServerDefinition[]): Promise<GeneratedFile[]> {
     const mcpServers: Record<string, unknown> = {};
@@ -57,22 +61,22 @@ class ClaudeDesktopMCPAdapter extends BaseMCPAdapter {
     return [
       {
         path: this.configPath,
-        content: JSON.stringify({ mcpServers }, null, 2) + "\n",
+        content: `${JSON.stringify({ mcpServers }, null, 2)}\n`,
         format: "json",
       },
     ];
   }
 
-  async detect(cwd?: string): Promise<boolean> {
-    const configPath = resolveClaudeDesktopConfigPath(cwd);
+  override async detect(): Promise<boolean> {
+    const configPath = resolveClaudeDesktopConfigPath();
     return configPath ? existsSync(configPath) : false;
   }
 
-  async install(files: GeneratedFile[], cwd?: string): Promise<void> {
-    const targetPath = resolveClaudeDesktopConfigPath(cwd);
+  override async install(files: GeneratedFile[]): Promise<void> {
+    const targetPath = resolveClaudeDesktopConfigPath();
     if (!targetPath) {
       throw new Error(
-        "Claude Desktop is only supported on macOS and Windows for global installation.",
+        "Claude Desktop is only supported on macOS, Windows, and Linux for global installation.",
       );
     }
 
@@ -80,33 +84,68 @@ class ClaudeDesktopMCPAdapter extends BaseMCPAdapter {
     if (!file) return;
 
     await mkdir(dirname(targetPath), { recursive: true });
-    await writeFile(targetPath, file.content, "utf-8");
+    let content = file.content;
+    if (existsSync(targetPath)) {
+      content = mergeMcpServersJson(await readFile(targetPath, "utf-8"), file.content);
+    }
+    await writeFile(targetPath, content, "utf-8");
   }
 
-  async import(cwd?: string): Promise<MCPServerDefinition[]> {
-    const configPath = resolveClaudeDesktopConfigPath(cwd);
-    if (!configPath || !existsSync(configPath)) return [];
+  override async uninstall(): Promise<void> {
+    const targetPath = resolveClaudeDesktopConfigPath();
+    if (!targetPath || !existsSync(targetPath)) return;
 
-    const raw = await readFile(configPath, "utf-8");
-    const data = JSON.parse(raw) as { mcpServers?: Record<string, Record<string, unknown>> };
-    const servers: MCPServerDefinition[] = [];
-
-    for (const [id, config] of Object.entries(data.mcpServers ?? {})) {
-      if (!config.command) continue;
-
-      servers.push({
-        id,
-        name: id,
-        transport: {
-          type: "stdio",
-          command: config.command as string,
-          args: config.args as string[] | undefined,
-          env: config.env as Record<string, string> | undefined,
-        },
-      });
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await readFile(targetPath, "utf-8"));
+    } catch {
+      return;
     }
 
-    return servers;
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return;
+    }
+
+    const data = parsed as Record<string, unknown>;
+    if (!("mcpServers" in data)) return;
+
+    const rest = { ...data };
+    delete rest.mcpServers;
+    await writeFile(targetPath, `${JSON.stringify(rest, null, 2)}\n`, "utf-8");
+  }
+
+  async import(): Promise<MCPServerDefinition[]> {
+    const configPath = resolveClaudeDesktopConfigPath();
+    if (!configPath || !existsSync(configPath)) return [];
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await readFile(configPath, "utf-8"));
+    } catch {
+      return [];
+    }
+
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return [];
+    }
+
+    const mcpServers = (parsed as Record<string, unknown>).mcpServers;
+    if (mcpServers === null || typeof mcpServers !== "object" || Array.isArray(mcpServers)) {
+      return [];
+    }
+
+    const validEntries: McpServersMap = {};
+    for (const [id, value] of Object.entries(mcpServers as Record<string, unknown>)) {
+      if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+        validEntries[id] = value as Record<string, unknown>;
+      }
+    }
+
+    return fromMcpServersMap(validEntries).filter((server) => server.transport.type === "stdio");
+  }
+
+  override async importUser(): Promise<MCPServerDefinition[]> {
+    return this.import();
   }
 }
 
