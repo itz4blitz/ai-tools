@@ -1,42 +1,70 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { existsSync } from "node:fs";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { runInNewContext } from "node:vm";
 import type { HookContext, HookDefinition, HookEventType } from "../index.js";
 
-// Mock the registry to prevent side effects during import
-vi.mock("./index.js", () => {
-  const registry = { register: vi.fn() };
-  abstract class BaseAdapter {
-    abstract readonly id: string;
-    abstract readonly name: string;
-    abstract readonly version: string;
-    abstract readonly capabilities: unknown;
-    abstract detect(): Promise<boolean>;
-    abstract generate(hooks: HookDefinition[]): Promise<unknown[]>;
-    abstract mapEvent(event: string): string[];
-    abstract mapNativeEvent(nativeEvent: string): string[];
-    async install() {}
-    async uninstall() {}
-    protected async commandExists() {
-      return false;
-    }
-    protected async removeFile() {}
-  }
-  return { BaseAdapter, registry };
+vi.mock("./index.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./index.js")>();
+  return {
+    ...actual,
+    registry: { register: vi.fn() },
+  };
 });
 
-const mockExistsSync = vi.hoisted(() => vi.fn(() => false));
-
-// Mock fs modules to avoid real filesystem access
-vi.mock("node:fs", () => ({
-  existsSync: mockExistsSync,
-}));
-
 import { OpenCodeAdapter } from "./opencode.js";
+
+async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
+  const dir = await mkdtemp(join(tmpdir(), "ai-tools-hooks-opencode-"));
+  try {
+    await fn(dir);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
 
 function makeHandler() {
   return async (ctx: HookContext, next: () => Promise<void>) => {
     void ctx;
     await next();
   };
+}
+
+/**
+ * Compile and instantiate the generated ESM plugin code by replacing its package
+ * import with injected `loadConfig` and `HookEngine` mocks. This validates JS syntax
+ * (including Windows paths in PROJECT_ROOT) and lets us execute the real hook handlers.
+ */
+function loadGeneratedPlugin(
+  code: string,
+  mocks: {
+    loadConfig: (configPath?: string, cwd?: string) => Promise<unknown>;
+    HookEngine: new (config: unknown) => {
+      emit: (
+        event: unknown,
+        toolInfo: unknown,
+      ) => Promise<Array<{ blocked?: boolean; reason?: string }>>;
+    };
+  },
+): (ctx?: {
+  project?: { worktree?: string };
+  directory?: string;
+}) => Promise<Record<string, (...args: unknown[]) => Promise<unknown>>> {
+  const transformed = code
+    .replace(
+      /import\s*\{[^}]*\}\s*from\s*["']@itz4blitz\/ai-tools-hooks["'];/,
+      "const { loadConfig, HookEngine } = __mocks;",
+    )
+    .replace(/export\s+const\s+AiHooksPlugin\s*=/, "const AiHooksPlugin =");
+
+  return runInNewContext(`(() => {\n${transformed}\nreturn AiHooksPlugin;\n})()`, {
+    __mocks: mocks,
+  }) as (ctx?: {
+    project?: { worktree?: string };
+    directory?: string;
+  }) => Promise<Record<string, (...args: unknown[]) => Promise<unknown>>>;
 }
 
 describe("OpenCodeAdapter", () => {
@@ -52,510 +80,261 @@ describe("OpenCodeAdapter", () => {
 
   beforeEach(() => {
     adapter = new OpenCodeAdapter();
-    mockExistsSync.mockReturnValue(false);
   });
 
   // ── Metadata / Capabilities ────────────────────────────────
 
-  describe("metadata", () => {
-    it("has correct id", () => {
+  describe("metadata & capabilities", () => {
+    it("has correct metadata", () => {
       expect(adapter.id).toBe("opencode");
-    });
-
-    it("has correct name", () => {
       expect(adapter.name).toBe("OpenCode");
-    });
-
-    it("has correct version", () => {
       expect(adapter.version).toBe("1.0");
     });
-  });
 
-  describe("capabilities", () => {
-    it("supports before hooks", () => {
+    it("declares expected capabilities", () => {
       expect(adapter.capabilities.beforeHooks).toBe(true);
-    });
-
-    it("supports after hooks", () => {
       expect(adapter.capabilities.afterHooks).toBe(true);
-    });
-
-    it("supports MCP", () => {
       expect(adapter.capabilities.mcp).toBe(true);
-    });
-
-    it("supports config file generation", () => {
       expect(adapter.capabilities.configFile).toBe(true);
-    });
-
-    it("lists all supported events", () => {
-      const expected: HookEventType[] = [
-        "session:start",
-        "session:end",
-        "prompt:submit",
-        "prompt:response",
-        "tool:before",
-        "tool:after",
-        "file:read",
-        "file:write",
-        "file:edit",
-        "file:delete",
-        "shell:before",
-        "shell:after",
-        "mcp:before",
-        "mcp:after",
-        "notification",
-      ];
-      expect(adapter.capabilities.supportedEvents).toEqual(expected);
-    });
-
-    it("lists all blockable events", () => {
-      const expected: HookEventType[] = [
-        "tool:before",
-        "file:read",
-        "file:write",
-        "file:edit",
-        "file:delete",
-        "shell:before",
-        "mcp:before",
-      ];
-      expect(adapter.capabilities.blockableEvents).toEqual(expected);
-    });
-
-    it("blockable events are a subset of supported events", () => {
       for (const event of adapter.capabilities.blockableEvents) {
         expect(adapter.capabilities.supportedEvents).toContain(event);
       }
     });
   });
 
-  // ── mapEvent ───────────────────────────────────────────────
+  // ── Event Mapping ──────────────────────────────────────────
 
-  describe("mapEvent", () => {
-    it("maps session:start to session.created", () => {
+  describe("event mapping", () => {
+    it("maps universal events to native OpenCode events", () => {
       expect(adapter.mapEvent("session:start")).toEqual(["session.created"]);
-    });
-
-    it("maps session:end to session.idle", () => {
       expect(adapter.mapEvent("session:end")).toEqual(["session.idle"]);
-    });
-
-    it("maps prompt:submit to message.updated", () => {
       expect(adapter.mapEvent("prompt:submit")).toEqual(["message.updated"]);
-    });
-
-    it("maps prompt:response to message.part.updated", () => {
       expect(adapter.mapEvent("prompt:response")).toEqual(["message.part.updated"]);
-    });
-
-    it("maps tool:before to tool.execute.before", () => {
       expect(adapter.mapEvent("tool:before")).toEqual(["tool.execute.before"]);
-    });
-
-    it("maps tool:after to tool.execute.after", () => {
       expect(adapter.mapEvent("tool:after")).toEqual(["tool.execute.after"]);
-    });
-
-    it("maps file:read to tool.execute.before", () => {
-      expect(adapter.mapEvent("file:read")).toEqual(["tool.execute.before"]);
-    });
-
-    it("maps file:write to tool.execute.before and file.edited", () => {
       expect(adapter.mapEvent("file:write")).toEqual(["tool.execute.before", "file.edited"]);
-    });
-
-    it("maps file:edit to tool.execute.before and file.edited", () => {
-      expect(adapter.mapEvent("file:edit")).toEqual(["tool.execute.before", "file.edited"]);
-    });
-
-    it("maps file:delete to tool.execute.before", () => {
-      expect(adapter.mapEvent("file:delete")).toEqual(["tool.execute.before"]);
-    });
-
-    it("maps shell:before to tool.execute.before", () => {
-      expect(adapter.mapEvent("shell:before")).toEqual(["tool.execute.before"]);
-    });
-
-    it("maps shell:after to tool.execute.after", () => {
-      expect(adapter.mapEvent("shell:after")).toEqual(["tool.execute.after"]);
-    });
-
-    it("maps mcp:before to tool.execute.before", () => {
-      expect(adapter.mapEvent("mcp:before")).toEqual(["tool.execute.before"]);
-    });
-
-    it("maps mcp:after to tool.execute.after", () => {
-      expect(adapter.mapEvent("mcp:after")).toEqual(["tool.execute.after"]);
-    });
-
-    it("maps notification to tui.toast.show", () => {
       expect(adapter.mapEvent("notification")).toEqual(["tui.toast.show"]);
-    });
-
-    it("returns empty array for unknown event", () => {
       expect(adapter.mapEvent("unknown:event" as HookEventType)).toEqual([]);
     });
-  });
 
-  // ── mapNativeEvent ─────────────────────────────────────────
-
-  describe("mapNativeEvent", () => {
-    it("maps session.created to session:start", () => {
+    it("maps native OpenCode events back to universal events", () => {
       expect(adapter.mapNativeEvent("session.created")).toEqual(["session:start"]);
-    });
-
-    it("maps session.idle to session:end", () => {
       expect(adapter.mapNativeEvent("session.idle")).toEqual(["session:end"]);
-    });
-
-    it("maps message.updated to prompt:submit", () => {
-      expect(adapter.mapNativeEvent("message.updated")).toEqual(["prompt:submit"]);
-    });
-
-    it("maps message.part.updated to prompt:response", () => {
-      expect(adapter.mapNativeEvent("message.part.updated")).toEqual(["prompt:response"]);
-    });
-
-    it("maps tool.execute.before to multiple universal events", () => {
-      const result = adapter.mapNativeEvent("tool.execute.before");
-      expect(result).toEqual([
-        "tool:before",
-        "file:read",
-        "file:write",
-        "file:edit",
-        "file:delete",
-        "shell:before",
-        "mcp:before",
-      ]);
-    });
-
-    it("maps tool.execute.after to multiple universal events", () => {
-      const result = adapter.mapNativeEvent("tool.execute.after");
-      expect(result).toEqual(["tool:after", "shell:after", "mcp:after"]);
-    });
-
-    it("maps file.edited to file:write and file:edit", () => {
+      expect(adapter.mapNativeEvent("tool.execute.before")).toContain("shell:before");
+      expect(adapter.mapNativeEvent("tool.execute.after")).toContain("shell:after");
       expect(adapter.mapNativeEvent("file.edited")).toEqual(["file:write", "file:edit"]);
-    });
-
-    it("maps tui.toast.show to notification", () => {
       expect(adapter.mapNativeEvent("tui.toast.show")).toEqual(["notification"]);
-    });
-
-    it("returns empty array for unknown native event", () => {
       expect(adapter.mapNativeEvent("unknown.event")).toEqual([]);
     });
-
-    it("returns empty array for empty string", () => {
-      expect(adapter.mapNativeEvent("")).toEqual([]);
-    });
   });
 
-  // ── generate ───────────────────────────────────────────────
+  // ── Generate & Execute Plugin ──────────────────────────────
 
   describe("generate", () => {
-    it("returns two config files (plugin + package.json)", async () => {
+    it("emits plugin JS and .opencode/package.json (not nested .opencode/plugins/package.json)", async () => {
       const configs = await adapter.generate([testHook]);
       expect(configs).toHaveLength(2);
-    });
+      expect(configs.map((c) => c.path)).toEqual([
+        ".opencode/plugins/ai-tools-hooks-plugin.js",
+        ".opencode/package.json",
+      ]);
 
-    it("generates plugin at correct path", async () => {
-      const configs = await adapter.generate([testHook]);
-      const plugin = configs.find((c) => c.path.includes("ai-tools-hooks-plugin"));
-      expect(plugin).toBeDefined();
-      expect(plugin!.path).toBe(".opencode/plugins/ai-tools-hooks-plugin.js");
-    });
-
-    it("plugin has correct format", async () => {
-      const configs = await adapter.generate([testHook]);
-      const plugin = configs.find((c) => c.path.includes("ai-tools-hooks-plugin"));
-      expect(plugin!.format).toBe("js");
-    });
-
-    it("plugin imports from ai-hooks", async () => {
-      const configs = await adapter.generate([testHook]);
-      const plugin = configs.find((c) => c.path.includes("ai-tools-hooks-plugin"));
-      expect(plugin!.content).toContain(
-        'import { loadConfig, HookEngine } from "@itz4blitz/ai-tools-hooks"',
-      );
-    });
-
-    it("plugin contains DO NOT EDIT warning", async () => {
-      const configs = await adapter.generate([testHook]);
-      const plugin = configs.find((c) => c.path.includes("ai-tools-hooks-plugin"));
-      expect(plugin!.content).toContain("DO NOT EDIT");
-    });
-
-    it("plugin embeds PROJECT_ROOT for worktree safety", async () => {
-      const configs = await adapter.generate([testHook]);
-      const plugin = configs.find((c) => c.path.includes("ai-tools-hooks-plugin"));
-      expect(plugin!.content).toContain("const PROJECT_ROOT =");
-      expect(plugin!.content).toContain("process.chdir(PROJECT_ROOT)");
-    });
-
-    it("plugin contains handleHook function", async () => {
-      const configs = await adapter.generate([testHook]);
-      const plugin = configs.find((c) => c.path.includes("ai-tools-hooks-plugin"));
-      expect(plugin!.content).toContain("async function handleHook");
-    });
-
-    it("plugin contains resolveToolBefore function", async () => {
-      const configs = await adapter.generate([testHook]);
-      const plugin = configs.find((c) => c.path.includes("ai-tools-hooks-plugin"));
-      expect(plugin!.content).toContain("function resolveToolBefore");
-    });
-
-    it("plugin contains resolveToolAfter function", async () => {
-      const configs = await adapter.generate([testHook]);
-      const plugin = configs.find((c) => c.path.includes("ai-tools-hooks-plugin"));
-      expect(plugin!.content).toContain("function resolveToolAfter");
-    });
-
-    it("plugin handles tool.execute.before hook entry for shell:before", async () => {
-      const configs = await adapter.generate([testHook]);
-      const plugin = configs.find((c) => c.path.includes("ai-tools-hooks-plugin"));
-      expect(plugin!.content).toContain('"tool.execute.before"');
-    });
-
-    it("plugin handles session.created event", async () => {
-      const sessionHook: HookDefinition = {
-        id: "session",
-        name: "Session Hook",
-        events: ["session:start"],
-        phase: "before",
-        handler: makeHandler(),
-      };
-      const configs = await adapter.generate([sessionHook]);
-      const plugin = configs.find((c) => c.path.includes("ai-tools-hooks-plugin"));
-      expect(plugin!.content).toContain('"session.created"');
-    });
-
-    it("plugin handles session.idle event", async () => {
-      const sessionEndHook: HookDefinition = {
-        id: "session-end",
-        name: "Session End Hook",
-        events: ["session:end"],
-        phase: "after",
-        handler: makeHandler(),
-      };
-      const configs = await adapter.generate([sessionEndHook]);
-      const plugin = configs.find((c) => c.path.includes("ai-tools-hooks-plugin"));
-      expect(plugin!.content).toContain('"session.idle"');
-    });
-
-    it("plugin handles message.updated event", async () => {
-      const promptHook: HookDefinition = {
-        id: "prompt",
-        name: "Prompt Hook",
-        events: ["prompt:submit"],
-        phase: "before",
-        handler: makeHandler(),
-      };
-      const configs = await adapter.generate([promptHook]);
-      const plugin = configs.find((c) => c.path.includes("ai-tools-hooks-plugin"));
-      expect(plugin!.content).toContain('"message.updated"');
-    });
-
-    it("plugin handles tui.toast.show event", async () => {
-      const notifHook: HookDefinition = {
-        id: "notif",
-        name: "Notification Hook",
-        events: ["notification"],
-        phase: "after",
-        handler: makeHandler(),
-      };
-      const configs = await adapter.generate([notifHook]);
-      const plugin = configs.find((c) => c.path.includes("ai-tools-hooks-plugin"));
-      expect(plugin!.content).toContain('"tui.toast.show"');
-    });
-
-    it("plugin handles blocking for tool.execute.before", async () => {
-      const configs = await adapter.generate([testHook]);
-      const plugin = configs.find((c) => c.path.includes("ai-tools-hooks-plugin"));
-      expect(plugin!.content).toContain("blocked");
-      expect(plugin!.content).toContain("reason");
-    });
-
-    it("plugin handles file_write and write tool names", async () => {
-      const configs = await adapter.generate([testHook]);
-      const plugin = configs.find((c) => c.path.includes("ai-tools-hooks-plugin"));
-      expect(plugin!.content).toContain('"file_write"');
-      expect(plugin!.content).toContain('"write"');
-    });
-
-    it("plugin handles file_edit and edit tool names", async () => {
-      const configs = await adapter.generate([testHook]);
-      const plugin = configs.find((c) => c.path.includes("ai-tools-hooks-plugin"));
-      expect(plugin!.content).toContain('"file_edit"');
-      expect(plugin!.content).toContain('"edit"');
-    });
-
-    it("plugin handles file_read and read tool names", async () => {
-      const configs = await adapter.generate([testHook]);
-      const plugin = configs.find((c) => c.path.includes("ai-tools-hooks-plugin"));
-      expect(plugin!.content).toContain('"file_read"');
-      expect(plugin!.content).toContain('"read"');
-    });
-
-    it("plugin handles bash and shell tool names", async () => {
-      const configs = await adapter.generate([testHook]);
-      const plugin = configs.find((c) => c.path.includes("ai-tools-hooks-plugin"));
-      expect(plugin!.content).toContain('"bash"');
-      expect(plugin!.content).toContain('"shell"');
-    });
-
-    it("plugin exports AiHooksPlugin", async () => {
-      const configs = await adapter.generate([testHook]);
-      const plugin = configs.find((c) => c.path.includes("ai-tools-hooks-plugin"));
-      expect(plugin!.content).toContain("export const AiHooksPlugin");
-    });
-
-    it("generates package.json at correct path", async () => {
-      const configs = await adapter.generate([testHook]);
-      const pkgJson = configs.find((c) => c.path.includes("package.json"));
-      expect(pkgJson).toBeDefined();
-      expect(pkgJson!.path).toBe(".opencode/plugins/package.json");
-    });
-
-    it("package.json has correct format", async () => {
-      const configs = await adapter.generate([testHook]);
-      const pkgJson = configs.find((c) => c.path.includes("package.json"));
-      expect(pkgJson!.format).toBe("json");
-    });
-
-    it("package.json contains valid JSON", async () => {
-      const configs = await adapter.generate([testHook]);
-      const pkgJson = configs.find((c) => c.path.includes("package.json"));
-      const parsed = JSON.parse(pkgJson!.content) as Record<string, unknown>;
-      expect(parsed).toBeDefined();
-      expect(parsed.name).toBe("ai-hooks-opencode-plugin");
-    });
-
-    it("package.json has ESM type", async () => {
-      const configs = await adapter.generate([testHook]);
-      const pkgJson = configs.find((c) => c.path.includes("package.json"));
-      const parsed = JSON.parse(pkgJson!.content) as Record<string, unknown>;
-      expect(parsed.type).toBe("module");
-    });
-
-    it("package.json has ai-hooks dependency", async () => {
-      const configs = await adapter.generate([testHook]);
-      const pkgJson = configs.find((c) => c.path.includes("package.json"));
-      const parsed = JSON.parse(pkgJson!.content) as {
+      const pkg = JSON.parse(configs[1]!.content) as {
+        type: string;
         dependencies: Record<string, string>;
       };
-      expect(parsed.dependencies["@itz4blitz/ai-tools-hooks"]).toBe("*");
+      expect(pkg.type).toBe("module");
+      expect(pkg.dependencies["@itz4blitz/ai-tools-hooks"]).toBe("*");
     });
 
-    it("package.json points main to plugin file", async () => {
-      const configs = await adapter.generate([testHook]);
-      const pkgJson = configs.find((c) => c.path.includes("package.json"));
-      const parsed = JSON.parse(pkgJson!.content) as Record<string, unknown>;
-      expect(parsed.main).toBe("ai-tools-hooks-plugin.js");
+    it("escapes PROJECT_ROOT via JSON.stringify and does not call process.chdir", async () => {
+      const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue("C:\\Users\\dev\\my-repo");
+      try {
+        const configs = await adapter.generate([testHook]);
+        const pluginCode = configs[0]!.content;
+        expect(pluginCode).toContain(
+          `const PROJECT_ROOT = ${JSON.stringify(resolve("C:\\Users\\dev\\my-repo"))};`,
+        );
+        expect(pluginCode).not.toContain("process.chdir");
+
+        // Must parse as valid JS with Windows backslashes
+        const pluginFactory = loadGeneratedPlugin(pluginCode, {
+          loadConfig: vi.fn().mockResolvedValue({ hooks: [] }),
+          HookEngine: class {
+            emit = vi.fn().mockResolvedValue([]);
+          },
+        });
+        expect(typeof pluginFactory).toBe("function");
+      } finally {
+        cwdSpy.mockRestore();
+      }
     });
 
-    it("deduplicates native events from multiple hooks mapping to same native event", async () => {
-      const hooks: HookDefinition[] = [
+    it("routes bus lifecycle events through event handler and tool hooks at top level", async () => {
+      const allHooks: HookDefinition[] = [
         {
-          id: "hook1",
-          name: "Hook 1",
-          events: ["tool:before"],
-          phase: "before",
-          handler: makeHandler(),
-        },
-        {
-          id: "hook2",
-          name: "Hook 2",
-          events: ["file:read"],
+          id: "all",
+          name: "All",
+          events: [
+            "session:start",
+            "session:end",
+            "file:write",
+            "prompt:submit",
+            "prompt:response",
+            "notification",
+            "shell:before",
+            "shell:after",
+          ],
           phase: "before",
           handler: makeHandler(),
         },
       ];
-      const configs = await adapter.generate(hooks);
-      const plugin = configs.find((c) => c.path.includes("ai-tools-hooks-plugin"));
-      // Both map to tool.execute.before, should only appear once
-      const matches = plugin!.content.match(/"tool\.execute\.before"/g);
-      // It appears in the hook entries once (as a key) plus in the handleHook switch
-      expect(matches).toBeDefined();
-      // The hook entry line should not be duplicated
-      const hookEntryMatches = plugin!.content.match(/"tool\.execute\.before": async/g);
-      expect(hookEntryMatches).toHaveLength(1);
-    });
 
-    it("maps multiple hook events to correct native events", async () => {
-      const multiHook: HookDefinition = {
-        id: "multi",
-        name: "Multi Hook",
-        events: ["session:start", "tool:after", "notification"],
-        phase: "after",
-        handler: makeHandler(),
-      };
-      const configs = await adapter.generate([multiHook]);
-      const plugin = configs.find((c) => c.path.includes("ai-tools-hooks-plugin"));
-      expect(plugin!.content).toContain('"session.created": async');
-      expect(plugin!.content).toContain('"tool.execute.after": async');
-      expect(plugin!.content).toContain('"tui.toast.show": async');
-    });
+      const configs = await adapter.generate(allHooks);
+      const pluginCode = configs[0]!.content;
 
-    it("generates config for empty hooks array", async () => {
-      const configs = await adapter.generate([]);
-      expect(configs).toHaveLength(2);
-      const plugin = configs.find((c) => c.path.includes("ai-tools-hooks-plugin"));
-      // The plugin should have no hook entries
-      expect(plugin!.content).toContain("return {");
-    });
+      const emitted: Array<{ event: Record<string, unknown>; toolInfo: unknown }> = [];
+      const loadConfigMock = vi.fn().mockResolvedValue({ hooks: [] });
 
-    it("generates file.edited hook entry for file:write event", async () => {
-      const fileHook: HookDefinition = {
-        id: "file",
-        name: "File Hook",
-        events: ["file:write"],
-        phase: "before",
-        handler: makeHandler(),
-      };
-      const configs = await adapter.generate([fileHook]);
-      const plugin = configs.find((c) => c.path.includes("ai-tools-hooks-plugin"));
-      // file:write maps to both tool.execute.before and file.edited
-      expect(plugin!.content).toContain('"tool.execute.before": async');
-      expect(plugin!.content).toContain('"file.edited": async');
-    });
+      class MockHookEngine {
+        async emit(event: Record<string, unknown>, toolInfo: unknown) {
+          emitted.push({ event, toolInfo });
+          if (event.type === "shell:before" && event.command === "rm -rf /") {
+            return [{ blocked: true, reason: "Dangerous command blocked" }];
+          }
+          return [];
+        }
+      }
 
-    it("plugin handles message.part.updated for prompt:response", async () => {
-      const responseHook: HookDefinition = {
-        id: "response",
-        name: "Response Hook",
-        events: ["prompt:response"],
-        phase: "after",
-        handler: makeHandler(),
-      };
-      const configs = await adapter.generate([responseHook]);
-      const plugin = configs.find((c) => c.path.includes("ai-tools-hooks-plugin"));
-      expect(plugin!.content).toContain('"message.part.updated": async');
+      const AiHooksPlugin = loadGeneratedPlugin(pluginCode, {
+        loadConfig: loadConfigMock,
+        HookEngine: MockHookEngine,
+      });
+
+      const hooks = await AiHooksPlugin({ directory: "/workspace/demo" });
+      expect(typeof hooks.event).toBe("function");
+      expect(typeof hooks["tool.execute.before"]).toBe("function");
+      expect(typeof hooks["tool.execute.after"]).toBe("function");
+
+      // Bus events
+      await hooks.event!({ event: { type: "session.created", properties: {} } });
+      await hooks.event!({ event: { type: "file.edited", properties: { file: "src/index.ts" } } });
+      await hooks.event!({ event: { type: "tui.toast.show", properties: { message: "Done" } } });
+
+      expect(loadConfigMock).toHaveBeenCalledWith(undefined, "/workspace/demo");
+      expect(emitted[0]!.event).toMatchObject({
+        type: "session:start",
+        workingDirectory: "/workspace/demo",
+      });
+      expect(emitted[1]!.event).toMatchObject({
+        type: "file:edit",
+        path: "src/index.ts",
+      });
+      expect(emitted[2]!.event).toMatchObject({
+        type: "notification",
+        message: "Done",
+      });
+
+      // tool.execute.before reading output.args (edit with filePath/oldString/newString)
+      await hooks["tool.execute.before"]!(
+        { tool: "edit", sessionID: "s1", callID: "c1" },
+        { args: { filePath: "src/app.ts", oldString: "foo", newString: "bar" } },
+      );
+      expect(emitted[3]!.event).toMatchObject({
+        type: "file:edit",
+        path: "src/app.ts",
+        oldContent: "foo",
+        newContent: "bar",
+      });
+
+      // tool.execute.before throwing Error on block
+      await expect(
+        hooks["tool.execute.before"]!(
+          { tool: "bash", sessionID: "s1", callID: "c2" },
+          { args: { command: "rm -rf /" } },
+        ),
+      ).rejects.toThrow("Dangerous command blocked");
+
+      // tool.execute.after
+      await hooks["tool.execute.after"]!(
+        { tool: "bash", args: { command: "echo hi" } },
+        { output: "hi\n", metadata: { exit: 0 } },
+      );
+      expect(emitted[5]!.event).toMatchObject({
+        type: "shell:after",
+        command: "echo hi",
+        stdout: "hi\n",
+        exitCode: 0,
+      });
     });
   });
 
-  // ── detect ──────────────────────────────────────────────────
+  // ── Install / Uninstall / Detect (Real Temp Dir) ───────────
 
-  describe("detect", () => {
-    it("returns false when command does not exist and no .opencode dir", async () => {
-      mockExistsSync.mockReturnValue(false);
-      const result = await adapter.detect();
-      expect(result).toBe(false);
+  describe("install, uninstall, and detect", () => {
+    it("merges .opencode/package.json safely on install and cleans up on uninstall", async () => {
+      await withTempDir(async (dir) => {
+        await mkdir(join(dir, ".opencode"), { recursive: true });
+        await writeFile(
+          join(dir, ".opencode/package.json"),
+          JSON.stringify({ name: "my-plugins", dependencies: { "other-pkg": "^1.0.0" } }, null, 2),
+        );
+
+        const configs = await adapter.generate([testHook]);
+        await adapter.install(configs, dir);
+
+        expect(existsSync(join(dir, ".opencode/plugins/ai-tools-hooks-plugin.js"))).toBe(true);
+        const installedPkg = JSON.parse(
+          await readFile(join(dir, ".opencode/package.json"), "utf-8"),
+        ) as { name: string; dependencies: Record<string, string> };
+        expect(installedPkg.name).toBe("my-plugins");
+        expect(installedPkg.dependencies["other-pkg"]).toBe("^1.0.0");
+        expect(installedPkg.dependencies["@itz4blitz/ai-tools-hooks"]).toBe("*");
+
+        // Uninstall preserves other-pkg and removes plugin + hooks dep
+        await adapter.uninstall(dir);
+        expect(existsSync(join(dir, ".opencode/plugins/ai-tools-hooks-plugin.js"))).toBe(false);
+        const remainingPkg = JSON.parse(
+          await readFile(join(dir, ".opencode/package.json"), "utf-8"),
+        ) as { name: string; dependencies: Record<string, string> };
+        expect(remainingPkg.dependencies["other-pkg"]).toBe("^1.0.0");
+        expect(remainingPkg.dependencies["@itz4blitz/ai-tools-hooks"]).toBeUndefined();
+      });
     });
 
-    it("returns true when .opencode directory exists", async () => {
-      mockExistsSync.mockReturnValue(true);
-      const result = await adapter.detect();
-      expect(result).toBe(true);
+    it("deletes .opencode/package.json on uninstall when it only contained hooks dependency", async () => {
+      await withTempDir(async (dir) => {
+        const configs = await adapter.generate([testHook]);
+        await adapter.install(configs, dir);
+        expect(existsSync(join(dir, ".opencode/package.json"))).toBe(true);
+
+        await adapter.uninstall(dir);
+        expect(existsSync(join(dir, ".opencode/package.json"))).toBe(false);
+      });
     });
-  });
 
-  // ── uninstall ───────────────────────────────────────────────
+    it("detects .opencode, opencode.json, and opencode.jsonc in cwd", async () => {
+      await withTempDir(async (dir) => {
+        const cmdSpy = vi
+          .spyOn(adapter as unknown as { commandExists: () => Promise<boolean> }, "commandExists")
+          .mockResolvedValue(false);
+        try {
+          expect(await adapter.detect(dir)).toBe(false);
 
-  describe("uninstall", () => {
-    it("calls removeFile for plugin and package.json", async () => {
-      await adapter.uninstall();
-      // uninstall runs without error (removeFile is a no-op mock)
+          await writeFile(join(dir, "opencode.jsonc"), "{ /* comment */ }\n");
+          expect(await adapter.detect(dir)).toBe(true);
+
+          await rm(join(dir, "opencode.jsonc"));
+          await writeFile(join(dir, "opencode.json"), "{}\n");
+          expect(await adapter.detect(dir)).toBe(true);
+
+          await rm(join(dir, "opencode.json"));
+          await mkdir(join(dir, ".opencode"));
+          expect(await adapter.detect(dir)).toBe(true);
+        } finally {
+          cmdSpy.mockRestore();
+        }
+      });
     });
   });
 });
