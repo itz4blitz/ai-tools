@@ -60,6 +60,22 @@ function makeFileEditCtx(path: string, newContent: string): HookContext {
   };
 }
 
+function makeFileDeleteCtx(path: string): HookContext {
+  return {
+    event: {
+      type: "file:delete",
+      path,
+      timestamp: Date.now(),
+      metadata: {},
+    } as HookEvent,
+    tool: { name: "test", version: "1.0" },
+    cwd: "/tmp",
+    state: new Map(),
+    results: [],
+    startedAt: Date.now(),
+  };
+}
+
 function makeShellAfterCtx(command: string): HookContext {
   return {
     event: {
@@ -233,6 +249,26 @@ describe("protectGitignored", () => {
     });
     expect(ctx.results).toHaveLength(0);
     expect(nextCalled).toBe(true);
+  });
+
+  it("blocks edits to sensitive files", async () => {
+    const ctx = makeFileEditCtx("/project/.env", "SECRET=updated");
+    await protectGitignored.handler(ctx, noop);
+    expect(ctx.results[0]?.blocked).toBe(true);
+    expect(ctx.results[0]?.reason).toContain("edit");
+    expect(ctx.results[0]?.reason).toContain(".env");
+  });
+
+  it("blocks deletions of sensitive files", async () => {
+    const ctx = makeFileDeleteCtx("/project/credentials.json");
+    await protectGitignored.handler(ctx, noop);
+    expect(ctx.results[0]?.blocked).toBe(true);
+    expect(ctx.results[0]?.reason).toContain("delete");
+    expect(ctx.results[0]?.reason).toContain("credentials.json");
+  });
+
+  it("subscribes to file:write, file:edit, and file:delete", () => {
+    expect(protectGitignored.events).toEqual(["file:write", "file:edit", "file:delete"]);
   });
 });
 

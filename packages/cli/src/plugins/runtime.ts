@@ -12,13 +12,14 @@ type GeneratedFileLike = {
 };
 
 type McpAdapter = DetectableAdapter & {
+  userConfigPath?: string;
   generate(servers: unknown[]): Promise<GeneratedFileLike[]>;
-  install(files: GeneratedFileLike[]): Promise<void>;
+  install(files: GeneratedFileLike[], cwd?: string): Promise<void>;
 };
 
 type SkillsAdapter = DetectableAdapter & {
-  generate(skills: unknown[]): Promise<GeneratedFileLike[]>;
-  install(files: GeneratedFileLike[]): Promise<void>;
+  generate(skills: unknown[], layer?: "project" | "user"): Promise<GeneratedFileLike[]>;
+  install(files: GeneratedFileLike[], cwd?: string): Promise<void>;
 };
 
 type RulesAdapter = DetectableAdapter & {

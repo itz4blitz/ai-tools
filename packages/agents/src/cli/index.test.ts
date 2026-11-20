@@ -10,6 +10,7 @@ const {
   mockWriteFile,
   mockMkdir,
   mockReadFile,
+  mockExistsSync,
 } = vi.hoisted(() => ({
   mockRegistryDetectAll: vi.fn(),
   mockRegistryList: vi.fn(),
@@ -18,6 +19,7 @@ const {
   mockWriteFile: vi.fn(),
   mockMkdir: vi.fn(),
   mockReadFile: vi.fn(),
+  mockExistsSync: vi.fn(),
 }));
 
 vi.mock("../adapters/all.js", () => ({}));
@@ -29,6 +31,10 @@ vi.mock("../adapters/registry.js", () => ({
     get: (id: string) => mockRegistryGet(id),
     getAll: () => mockRegistryGetAll(),
   },
+}));
+
+vi.mock("node:fs", () => ({
+  existsSync: (...args: unknown[]) => mockExistsSync(...args),
 }));
 
 vi.mock("node:fs/promises", () => ({
@@ -92,6 +98,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockWriteFile.mockResolvedValue(undefined);
   mockMkdir.mockResolvedValue(undefined);
+  mockExistsSync.mockReturnValue(false);
 });
 
 afterEach(() => {
@@ -139,7 +146,16 @@ describe("run() - help output", () => {
   it("includes all documented commands in help text", async () => {
     await run(["help"]);
     const output = allLog();
-    for (const cmd of ["detect", "generate", "install", "import", "sync", "export", "help"]) {
+    for (const cmd of [
+      "init",
+      "detect",
+      "generate",
+      "install",
+      "import",
+      "sync",
+      "export",
+      "help",
+    ]) {
       expect(output).toContain(cmd);
     }
   });
@@ -150,6 +166,35 @@ describe("run() - help output", () => {
     for (const opt of ["--tools", "--config", "--verbose", "--dry-run"]) {
       expect(output).toContain(opt);
     }
+  });
+});
+
+describe("run() - init command", () => {
+  it("skips when config already exists", async () => {
+    mockExistsSync.mockReturnValue(true);
+    await run(["init"]);
+    expect(allLog()).toContain("Config already exists: ai-agents.config.ts");
+    expect(mockWriteFile).not.toHaveBeenCalled();
+  });
+
+  it("creates config file importing from @itz4blitz/ai-tools/agents", async () => {
+    mockExistsSync.mockReturnValue(false);
+    await run(["init"]);
+    expect(mockWriteFile).toHaveBeenCalledOnce();
+    expect(mockWriteFile).toHaveBeenCalledWith(
+      "ai-agents.config.ts",
+      expect.stringContaining('import { defineConfig } from "@itz4blitz/ai-tools/agents"'),
+      "utf-8",
+    );
+    expect(allLog()).toContain("Created ai-agents.config.ts");
+    expect(allLog()).toContain("Next steps:");
+  });
+
+  it("respects --dry-run flag and does not write files", async () => {
+    mockExistsSync.mockReturnValue(false);
+    await run(["init", "--dry-run"]);
+    expect(mockWriteFile).not.toHaveBeenCalled();
+    expect(allLog()).toContain("[dry-run] Would create ai-agents.config.ts");
   });
 });
 

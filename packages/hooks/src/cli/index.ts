@@ -94,7 +94,7 @@ async function cmdInit(flags: Flags): Promise<void> {
 
   const { writeFile } = await import("node:fs/promises");
 
-  const template = `import { defineConfig, hook, builtinHooks } from "@itz4blitz/ai-tools-hooks";
+  const template = `import { defineConfig, hook, builtinHooks } from "@itz4blitz/ai-tools/hooks";
 
 export default defineConfig({
   // Start with built-in security hooks

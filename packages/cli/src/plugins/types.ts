@@ -168,6 +168,7 @@ export type FailedPluginArtifact = {
 
 export type InstallPluginOptions = BuildPluginPlanOptions & {
   dryRun?: boolean;
+  layer?: "project" | "user";
 };
 
 export type InstallPluginResult = {

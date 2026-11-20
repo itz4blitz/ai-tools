@@ -189,6 +189,9 @@ describe("run() - init command", () => {
     await run(["init"]);
     const firstCall = mockWriteFile.mock.calls[0]!;
     const writtenContent = firstCall[1] as string;
+    expect(writtenContent).toContain(
+      'import { defineRulesConfig } from "@itz4blitz/ai-tools/rules"',
+    );
     expect(writtenContent).toContain("defineRulesConfig");
     expect(writtenContent).toContain("rules:");
     expect(writtenContent).toContain("TypeScript Standards");

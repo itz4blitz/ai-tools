@@ -14,6 +14,11 @@ export async function loadPluginConfig(configPath?: string): Promise<AiPluginDef
     throw new Error(`Plugin config not found: ${path}`);
   }
 
-  const mod = await import(await toPluginConfigModuleSpecifier(path));
+  const mod = (await import(await toPluginConfigModuleSpecifier(path))) as { default?: unknown };
+  if (!mod.default || typeof mod.default !== "object" || Array.isArray(mod.default)) {
+    throw new Error(
+      `Plugin config at ${path} must have a default export object (e.g. export default definePlugin({ ... }))`,
+    );
+  }
   return mod.default as AiPluginDefinition;
 }

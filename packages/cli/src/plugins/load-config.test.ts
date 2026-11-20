@@ -52,4 +52,22 @@ describe("loadPluginConfig", () => {
       /^file:\/\/\/.*ai-tools-plugin-config-%23.*\/ai-plugin\.config\.mjs$/,
     );
   });
+
+  it("throws a clear error when the config has no default export", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "ai-tools-plugin-config-nodefault-"));
+    tempDirs.push(dir);
+    const configPath = join(dir, "ai-plugin.config.mjs");
+    await writeFile(configPath, "export const id = 'no-default';\n", "utf-8");
+
+    await expect(loadPluginConfig(configPath)).rejects.toThrow("must have a default export object");
+  });
+
+  it("throws a clear error when the default export is not an object", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "ai-tools-plugin-config-nonobj-"));
+    tempDirs.push(dir);
+    const configPath = join(dir, "ai-plugin.config.mjs");
+    await writeFile(configPath, 'export default "not-an-object";\n', "utf-8");
+
+    await expect(loadPluginConfig(configPath)).rejects.toThrow("must have a default export object");
+  });
 });

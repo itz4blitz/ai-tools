@@ -1,7 +1,7 @@
 {
   "name": "@itz4blitz/ai-tools",
   "version": "1.4.0",
-  "description": "Unified CLI for all ai-tools engines (hooks, mcp, skills, agents, rules)",
+  "description": "Unified CLI for all ai-tools engines (hooks, mcp, skills, agents, rules, sessions, plugins, tui)",
   "license": "MIT",
   "repository": {
     "type": "git",
