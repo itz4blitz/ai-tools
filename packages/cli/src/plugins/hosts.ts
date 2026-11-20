@@ -76,7 +76,7 @@ export const KNOWN_PLUGIN_HOSTS: Record<string, PluginHostInfo> = {
     supportsInteractiveApps: false,
     supportsNativeBundles: false,
     notes:
-      "ZCode user MCP is ~/.zcode/cli/config.json (mcp.servers). Project MCP is .zcode/mcp.json. Hooks live in .zcode/config.json and .zcode/hooks.json. Do not put PalamHealth in the user file.",
+      "ZCode user MCP is ~/.zcode/cli/config.json (mcp.servers). Project MCP and hooks live in .zcode/config.json.",
   },
   "antigravity-cli": {
     id: "antigravity-cli",

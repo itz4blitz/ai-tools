@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { HookContext, HookDefinition, HookEventType } from "../index.js";
 
 const { mockHome } = vi.hoisted(() => ({ mockHome: { value: "" } }));
@@ -44,7 +44,13 @@ const shellHook: HookDefinition = {
   handler: makeHandler(),
 };
 
-const RUNNER_COMMAND = `node "\${ZCODE_PROJECT_DIR}/.zcode/hooks/ai-tools-runner.js"`;
+const sessionHook: HookDefinition = {
+  id: "welcome",
+  name: "welcome",
+  events: ["session:start" as HookEventType],
+  phase: "before",
+  handler: makeHandler(),
+};
 
 describe("ZcodeAdapter", () => {
   let adapter: ZcodeAdapter;
@@ -69,62 +75,73 @@ describe("ZcodeAdapter", () => {
     await rm(home, { recursive: true, force: true });
   });
 
-  it("uses ZCode identity and the seven native events", () => {
+  it("uses ZCode identity, cross-platform user paths, and blockable file:read", () => {
     expect(adapter.id).toBe("zcode");
     expect(adapter.name).toBe("ZCode");
     expect(adapter.mapEvent("shell:before")).toEqual(["PreToolUse"]);
+    expect(adapter.mapEvent("file:read")).toEqual(["PreToolUse"]);
     expect(adapter.mapEvent("session:end")).toEqual(["Stop"]);
     expect(adapter.mapEvent("notification")).toEqual([]);
     expect(adapter.mapNativeEvent("UserPromptSubmit")).toEqual(["prompt:submit"]);
     expect(adapter.mapNativeEvent("PermissionRequest")).toEqual(["tool:before"]);
-    expect(adapter.userConfigPath).toBe(join(home, ".zcode/cli/config.json"));
-    expect(adapter.userHooksPath).toBe(join(home, ".zcode/hooks.json"));
+    expect(adapter.capabilities.blockableEvents).toContain("file:read");
+    expect(adapter.userConfigPath).toBe(join(home, ".zcode", "cli", "config.json"));
+    expect(adapter.userHooksPath).toBe(join(home, ".zcode", "hooks.json"));
   });
 
-  it("writes .zcode/hooks.json and .zcode/config.json in the formats ZCode loads", async () => {
+  it("writes only .zcode/config.json and runner (no duplicate .zcode/hooks.json) with cross-platform command", async () => {
     const files = await adapter.generate([shellHook]);
     await adapter.install(files);
 
     expect(files.map((file) => file.path)).toEqual([
-      ".zcode/hooks.json",
       ".zcode/config.json",
       ".zcode/hooks/ai-tools-runner.js",
     ]);
+    expect(existsSync(join(tmp, ".zcode", "hooks.json"))).toBe(false);
 
-    const hookEntry = {
-      type: "command",
-      command: RUNNER_COMMAND,
-      timeout: 10,
-      statusMessage: "ai-hooks",
-    };
+    const expectedRunnerPath = resolve(process.cwd(), ".zcode/hooks/ai-tools-runner.js").replaceAll(
+      "\\",
+      "/",
+    );
+    const expectedCommand = `node ${JSON.stringify(expectedRunnerPath)}`;
+    expect(expectedCommand).not.toContain("${ZCODE_PROJECT_DIR}");
 
-    expect(JSON.parse(await readFile(join(tmp, ".zcode/hooks.json"), "utf-8"))).toEqual({
-      version: 1,
-      hooks: {
-        PreToolUse: [{ hooks: [hookEntry] }],
-      },
-    });
-
-    expect(JSON.parse(await readFile(join(tmp, ".zcode/config.json"), "utf-8"))).toEqual({
+    expect(JSON.parse(await readFile(join(tmp, ".zcode", "config.json"), "utf-8"))).toEqual({
       hooks: {
         enabled: true,
         events: {
-          PreToolUse: [{ hooks: [hookEntry] }],
+          PreToolUse: [
+            {
+              hooks: [
+                {
+                  type: "command",
+                  command: expectedCommand,
+                  timeout: 10,
+                  statusMessage: "ai-hooks",
+                },
+              ],
+            },
+          ],
         },
       },
     });
 
-    const runner = await readFile(join(tmp, ".zcode/hooks/ai-tools-runner.js"), "utf-8");
+    // Importing right after install must not return duplicate entries
+    const imported = await adapter.import(tmp);
+    expect(imported).toHaveLength(1);
+    expect(imported[0]?.name).toBe(expectedCommand);
+
+    const runner = await readFile(join(tmp, ".zcode", "hooks", "ai-tools-runner.js"), "utf-8");
     expect(runner.startsWith("#!/usr/bin/env node\n")).toBe(true);
     expect(runner).toContain('import { runZcodeHook } from "@itz4blitz/ai-tools-hooks"');
     expect(runner).toContain("process.exit(await runZcodeHook())");
     expect(runner).not.toMatch(/process\.exit\(0\);\s*$/);
   });
 
-  it("merges generated hooks into an existing .zcode/config.json without dropping other keys", async () => {
+  it("merges generated hooks into an existing .zcode/config.json and deletes empty event arrays", async () => {
     await mkdir(join(tmp, ".zcode"), { recursive: true });
     await writeFile(
-      join(tmp, ".zcode/config.json"),
+      join(tmp, ".zcode", "config.json"),
       `${JSON.stringify({
         model: "keep-me",
         hooks: {
@@ -135,21 +152,30 @@ describe("ZcodeAdapter", () => {
                 hooks: [{ type: "command", command: "echo custom", timeout: 5 }],
               },
             ],
+            PreToolUse: [
+              {
+                hooks: [
+                  { type: "command", command: 'node "/old/.zcode/hooks/ai-tools-runner.js"' },
+                ],
+              },
+            ],
           },
         },
       })}\n`,
       "utf-8",
     );
 
-    await adapter.install(await adapter.generate([shellHook]));
-    const config = JSON.parse(await readFile(join(tmp, ".zcode/config.json"), "utf-8")) as {
+    // Regenerate with only session:start -> old PreToolUse ai-hooks entry should be removed entirely (no empty [])
+    await adapter.install(await adapter.generate([sessionHook]));
+    const config = JSON.parse(await readFile(join(tmp, ".zcode", "config.json"), "utf-8")) as {
       model: string;
       hooks: { enabled: boolean; events: Record<string, unknown[]> };
     };
     expect(config.model).toBe("keep-me");
     expect(config.hooks.enabled).toBe(true);
     expect(config.hooks.events.Stop).toHaveLength(1);
-    expect(config.hooks.events.PreToolUse).toHaveLength(1);
+    expect(config.hooks.events.SessionStart).toHaveLength(1);
+    expect(config.hooks.events.PreToolUse).toBeUndefined();
   });
 
   it("detects a project .zcode directory", async () => {
@@ -160,7 +186,7 @@ describe("ZcodeAdapter", () => {
 
   it("detects user ~/.zcode/hooks.json without a zcode binary", async () => {
     await mkdir(join(home, ".zcode"), { recursive: true });
-    await writeFile(join(home, ".zcode/hooks.json"), "{}\n", "utf-8");
+    await writeFile(join(home, ".zcode", "hooks.json"), "{}\n", "utf-8");
     expect(await adapter.detect()).toBe(true);
   });
 
@@ -174,7 +200,7 @@ describe("ZcodeAdapter", () => {
   it("imports workspace hooks.json and config.json events", async () => {
     await mkdir(join(tmp, ".zcode"), { recursive: true });
     await writeFile(
-      join(tmp, ".zcode/hooks.json"),
+      join(tmp, ".zcode", "hooks.json"),
       `${JSON.stringify({
         version: 1,
         hooks: {
@@ -184,7 +210,7 @@ describe("ZcodeAdapter", () => {
       "utf-8",
     );
     await writeFile(
-      join(tmp, ".zcode/config.json"),
+      join(tmp, ".zcode", "config.json"),
       `${JSON.stringify({
         hooks: {
           enabled: true,
@@ -211,9 +237,9 @@ describe("ZcodeAdapter", () => {
   });
 
   it("imports user ~/.zcode/hooks.json and cli/config.json hooks.events", async () => {
-    await mkdir(join(home, ".zcode/cli"), { recursive: true });
+    await mkdir(join(home, ".zcode", "cli"), { recursive: true });
     await writeFile(
-      join(home, ".zcode/hooks.json"),
+      join(home, ".zcode", "hooks.json"),
       `${JSON.stringify({
         version: 1,
         hooks: {
@@ -223,7 +249,7 @@ describe("ZcodeAdapter", () => {
       "utf-8",
     );
     await writeFile(
-      join(home, ".zcode/cli/config.json"),
+      join(home, ".zcode", "cli", "config.json"),
       `${JSON.stringify({
         model: "keep-me",
         hooks: {
@@ -258,16 +284,16 @@ describe("ZcodeAdapter", () => {
       "utf-8",
     );
     await mkdir(join(tmp, ".zcode"), { recursive: true });
-    await writeFile(join(tmp, ".zcode/config.json"), "[1,2,3]", "utf-8");
-    await writeFile(join(tmp, ".zcode/hooks.json"), "{not-json", "utf-8");
+    await writeFile(join(tmp, ".zcode", "config.json"), "[1,2,3]", "utf-8");
+    await writeFile(join(tmp, ".zcode", "hooks.json"), "{not-json", "utf-8");
     const imported = await adapter.import();
     expect(imported.map((hook) => hook.name)).toEqual(["echo after"]);
     expect(imported[0]?.phase).toBe("after");
   });
 
   it("detects user ~/.zcode/cli/config.json", async () => {
-    await mkdir(join(home, ".zcode/cli"), { recursive: true });
-    await writeFile(join(home, ".zcode/cli/config.json"), "{}\n", "utf-8");
+    await mkdir(join(home, ".zcode", "cli"), { recursive: true });
+    await writeFile(join(home, ".zcode", "cli", "config.json"), "{}\n", "utf-8");
     expect(await adapter.detect()).toBe(true);
   });
 
@@ -279,35 +305,43 @@ describe("ZcodeAdapter", () => {
 
   it("does not rewrite missing workspace config on uninstall", async () => {
     await adapter.uninstall();
-    expect(existsSync(join(tmp, ".zcode/config.json"))).toBe(false);
+    expect(existsSync(join(tmp, ".zcode", "config.json"))).toBe(false);
   });
 
   it("preserves non-command matcher groups while replacing ai-hooks entries", async () => {
     await mkdir(join(tmp, ".zcode"), { recursive: true });
     await writeFile(
-      join(tmp, ".zcode/config.json"),
+      join(tmp, ".zcode", "config.json"),
       `${JSON.stringify({
         hooks: {
           events: {
             PreToolUse: "not-an-array",
-            Stop: [{ matcher: "x" }, { hooks: [{ type: "command", command: RUNNER_COMMAND }] }],
+            Stop: [
+              { matcher: "x" },
+              {
+                hooks: [{ type: "command", command: 'node "/x/.zcode/hooks/ai-tools-runner.js"' }],
+              },
+            ],
           },
         },
       })}\n`,
       "utf-8",
     );
     await adapter.install(await adapter.generate([shellHook]));
-    const config = JSON.parse(await readFile(join(tmp, ".zcode/config.json"), "utf-8")) as {
+    const config = JSON.parse(await readFile(join(tmp, ".zcode", "config.json"), "utf-8")) as {
       hooks: { events: Record<string, unknown[]> };
     };
     expect(config.hooks.events.PreToolUse).toHaveLength(1);
     expect(config.hooks.events.Stop).toHaveLength(1);
   });
 
-  it("uninstalls generated files and strips only ai-hooks entries from config.json", async () => {
+  it("uninstalls runner and strips only ai-hooks entries, removing empty hooks block", async () => {
+    const configPath = join(tmp, ".zcode", "config.json");
     await mkdir(join(tmp, ".zcode"), { recursive: true });
+
+    // Case 1: preserves custom Stop hook
     await writeFile(
-      join(tmp, ".zcode/config.json"),
+      configPath,
       `${JSON.stringify({
         model: "keep-me",
         hooks: {
@@ -322,14 +356,25 @@ describe("ZcodeAdapter", () => {
     await adapter.install(await adapter.generate([shellHook]));
     await adapter.uninstall();
 
-    expect(existsSync(join(tmp, ".zcode/hooks.json"))).toBe(false);
-    expect(existsSync(join(tmp, ".zcode/hooks/ai-tools-runner.js"))).toBe(false);
-    const config = JSON.parse(await readFile(join(tmp, ".zcode/config.json"), "utf-8")) as {
+    expect(existsSync(join(tmp, ".zcode", "hooks", "ai-tools-runner.js"))).toBe(false);
+    const config = JSON.parse(await readFile(configPath, "utf-8")) as {
       model: string;
       hooks: { events: Record<string, unknown[]> };
     };
     expect(config.model).toBe("keep-me");
     expect(config.hooks.events.Stop).toHaveLength(1);
     expect(config.hooks.events.PreToolUse).toBeUndefined();
+
+    // Case 2: removes empty hooks block while preserving model
+    await writeFile(configPath, `${JSON.stringify({ model: "keep-me" })}\n`, "utf-8");
+    await adapter.install(await adapter.generate([shellHook]));
+    await adapter.uninstall();
+    expect(JSON.parse(await readFile(configPath, "utf-8"))).toEqual({ model: "keep-me" });
+
+    // Case 3: removes config.json completely if it has no remaining keys
+    await rm(configPath, { force: true });
+    await adapter.install(await adapter.generate([shellHook]));
+    await adapter.uninstall();
+    expect(existsSync(configPath)).toBe(false);
   });
 });

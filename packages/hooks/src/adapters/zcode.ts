@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { BaseAdapter, registry } from "./index.js";
 import { collectNativeEvents, parseHookGroups, type NativeHookGroup } from "./claude-compat.js";
 import type {
@@ -59,14 +59,18 @@ const REVERSE_MAP: Record<string, HookEventType[]> = {
 const HOOKS_JSON = ".zcode/hooks.json";
 const CONFIG_JSON = ".zcode/config.json";
 const RUNNER_JS = ".zcode/hooks/ai-tools-runner.js";
-const RUNNER_COMMAND = `node "\${ZCODE_PROJECT_DIR}/.zcode/hooks/ai-tools-runner.js"`;
+
+function buildRunnerCommand(cwd = process.cwd()): string {
+  const runnerPath = resolve(cwd, RUNNER_JS).replaceAll("\\", "/");
+  return `node ${JSON.stringify(runnerPath)}`;
+}
 
 class ZcodeAdapter extends BaseAdapter {
   readonly id = "zcode";
   readonly name = "ZCode";
   readonly version = "1.0";
-  readonly userConfigPath = `${homedir()}/.zcode/cli/config.json`;
-  readonly userHooksPath = `${homedir()}/.zcode/hooks.json`;
+  readonly userConfigPath = join(homedir(), ".zcode", "cli", "config.json");
+  readonly userHooksPath = join(homedir(), ".zcode", "hooks.json");
 
   readonly capabilities: AdapterCapabilities = {
     beforeHooks: true,
@@ -92,6 +96,7 @@ class ZcodeAdapter extends BaseAdapter {
     blockableEvents: [
       "prompt:submit",
       "tool:before",
+      "file:read",
       "file:write",
       "file:edit",
       "file:delete",
@@ -113,11 +118,6 @@ class ZcodeAdapter extends BaseAdapter {
     const config = await this.mergeWorkspaceConfig(groups);
 
     return [
-      {
-        path: HOOKS_JSON,
-        content: `${JSON.stringify({ version: 1, hooks: groups }, null, 2)}\n`,
-        format: "json",
-      },
       {
         path: CONFIG_JSON,
         content: `${JSON.stringify(config, null, 2)}\n`,
@@ -158,12 +158,12 @@ class ZcodeAdapter extends BaseAdapter {
   }
 
   async uninstall(): Promise<void> {
-    await this.removeFile(HOOKS_JSON);
     await this.removeFile(RUNNER_JS);
     await this.stripWorkspaceConfig();
   }
 
   private buildGroups(nativeEvents: string[]): Record<string, NativeHookGroup[]> {
+    const command = buildRunnerCommand();
     const groups: Record<string, NativeHookGroup[]> = {};
     for (const native of nativeEvents) {
       groups[native] = [
@@ -171,7 +171,7 @@ class ZcodeAdapter extends BaseAdapter {
           hooks: [
             {
               type: "command",
-              command: RUNNER_COMMAND,
+              command,
               timeout: 10,
               statusMessage: "ai-hooks",
             },
@@ -207,12 +207,14 @@ process.exit(await runZcodeHook());
     const existing = await this.readJsonRecord(resolve(process.cwd(), CONFIG_JSON));
     const existingHooks = asObject(existing.hooks);
     const existingEvents = asObject(existingHooks.events);
-    const mergedEvents: Record<string, unknown> = { ...existingEvents };
+    const mergedEvents: Record<string, unknown> = {};
 
     for (const [event, entries] of Object.entries(existingEvents)) {
-      mergedEvents[event] = stripAiHooksGroups(entries);
+      const kept = stripAiHooksGroups(entries);
+      if (kept.length > 0) mergedEvents[event] = kept;
     }
     for (const [event, entries] of Object.entries(groups)) {
+      if (entries.length === 0) continue;
       const current = Array.isArray(mergedEvents[event]) ? mergedEvents[event] : [];
       mergedEvents[event] = [...current, ...entries];
     }
@@ -238,13 +240,27 @@ process.exit(await runZcodeHook());
       const kept = stripAiHooksGroups(entries);
       if (kept.length > 0) stripped[event] = kept;
     }
-    const next = {
-      ...existing,
-      hooks: {
-        ...existingHooks,
-        events: stripped,
-      },
-    };
+
+    const nextHooks: Record<string, unknown> = { ...existingHooks };
+    if (Object.keys(stripped).length > 0) {
+      nextHooks.events = stripped;
+    } else {
+      delete nextHooks.events;
+      delete nextHooks.enabled;
+    }
+
+    const next: Record<string, unknown> = { ...existing };
+    if (Object.keys(nextHooks).length > 0) {
+      next.hooks = nextHooks;
+    } else {
+      delete next.hooks;
+    }
+
+    if (Object.keys(next).length === 0) {
+      await this.removeFile(CONFIG_JSON);
+      return;
+    }
+
     await this.writeJsonFile(CONFIG_JSON, next);
   }
 

@@ -2,27 +2,27 @@ import { describe, expect, it, vi } from "vitest";
 
 const mockRegistries = {
   mcp: {
-    list: () => ["cursor", "codex", "claude-desktop", "opencode", "claude-code"],
+    list: () => ["cursor", "codex", "claude-desktop", "opencode", "claude-code", "zcode"],
     get: () => undefined,
     detectAll: async () => [{ id: "cursor" }, { id: "codex" }, { id: "claude-desktop" }],
   },
   skills: {
-    list: () => ["cursor", "codex", "opencode", "claude-code"],
+    list: () => ["cursor", "codex", "opencode", "claude-code", "zcode"],
     get: () => undefined,
     detectAll: async () => [{ id: "cursor" }, { id: "codex" }],
   },
   rules: {
-    list: () => ["cursor", "codex", "opencode", "claude-code"],
+    list: () => ["cursor", "codex", "opencode", "claude-code", "zcode"],
     get: () => undefined,
     detectAll: async () => [{ id: "cursor" }, { id: "codex" }],
   },
   agents: {
-    list: () => ["cursor", "codex", "opencode", "claude-code"],
+    list: () => ["cursor", "codex", "opencode", "claude-code", "zcode"],
     get: () => undefined,
     detectAll: async () => [{ id: "cursor" }, { id: "codex" }],
   },
   hooks: {
-    list: () => ["cursor", "codex", "opencode", "claude-code"],
+    list: () => ["cursor", "codex", "opencode", "claude-code", "zcode"],
     get: () => undefined,
     detectAll: async () => [{ id: "cursor" }, { id: "codex" }],
   },
@@ -153,7 +153,7 @@ describe("buildPluginInstallPlan", () => {
     expect(target?.engines.find((item) => item.engine === "agents")?.status).toBe("ready");
   });
 
-  it("marks zcode hooks as adapter-missing until the hooks registry lists zcode", async () => {
+  it("marks zcode hooks as ready because the hooks registry lists zcode", async () => {
     const plan = await buildPluginInstallPlan(
       {
         id: "cert-coach",
@@ -177,9 +177,7 @@ describe("buildPluginInstallPlan", () => {
     );
 
     expect(plan.targets[0]?.host.nativeEngineSupport.hooks).toBe(true);
-    expect(plan.targets[0]?.engines.find((item) => item.engine === "hooks")?.status).toBe(
-      "adapter-missing",
-    );
+    expect(plan.targets[0]?.engines.find((item) => item.engine === "hooks")?.status).toBe("ready");
   });
 
   it("marks antigravity-cli MCP as host-unsupported because no MCP adapter exists", async () => {
