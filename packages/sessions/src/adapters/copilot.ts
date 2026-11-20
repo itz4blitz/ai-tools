@@ -171,7 +171,7 @@ class CopilotSessionAdapter extends BaseSessionAdapter {
           const role = this.mapCliEventRole(ev);
           if (!role) continue;
           const text = ev.data?.content ?? ev.data?.text ?? ev.content ?? ev.text;
-          if (!text) continue;
+          if (typeof text !== "string" || text.length === 0) continue;
 
           messages.push({ role, content: text, timestamp: ev.timestamp });
           if (ev.timestamp) {
@@ -452,11 +452,17 @@ function extractVsCodeResponseText(response: VsCodeChatRequest["response"]): str
   if (typeof response === "string") return response;
   if (Array.isArray(response)) {
     return response
-      .map((part) => (typeof part === "string" ? part : (part.value ?? "")))
+      .map((part) => {
+        if (typeof part === "string") return part;
+        if (part && typeof part === "object" && typeof part.value === "string") {
+          return part.value;
+        }
+        return "";
+      })
       .filter(Boolean)
       .join("");
   }
-  return response.value ?? "";
+  return typeof response === "object" && typeof response.value === "string" ? response.value : "";
 }
 
 function normalizeTimestamp(value: number | string | undefined): string | undefined {

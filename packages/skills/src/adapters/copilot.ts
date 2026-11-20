@@ -59,7 +59,14 @@ class CopilotSkillAdapter extends BaseSkillAdapter {
 
 function formatSkill(skill: SkillDefinition): string {
   const description = skill.description ?? skill.name;
-  return `---\nname: ${skill.id}\ndescription: ${description}\n---\n\n${skill.content}\n`;
+  return `---\nname: ${formatYamlScalar(skill.id)}\ndescription: ${formatYamlScalar(description)}\n---\n\n${skill.content}\n`;
+}
+
+function formatYamlScalar(value: string): string {
+  if (/[:#"'`\r\n]|^\s|\s$|^[*&![\]{}>|?-]/.test(value)) {
+    return JSON.stringify(value);
+  }
+  return value;
 }
 
 function parseSkill(id: string, raw: string): SkillDefinition {
@@ -86,11 +93,17 @@ function parseSkill(id: string, raw: string): SkillDefinition {
 }
 
 function stripQuotes(value: string): string {
-  if (
-    (value.startsWith('"') && value.endsWith('"')) ||
-    (value.startsWith("'") && value.endsWith("'"))
-  ) {
-    return value.slice(1, -1);
+  if (value.length < 2) return value;
+  if (value.startsWith('"') && value.endsWith('"')) {
+    try {
+      const parsed = JSON.parse(value);
+      return typeof parsed === "string" ? parsed : value.slice(1, -1);
+    } catch {
+      return value.slice(1, -1);
+    }
+  }
+  if (value.startsWith("'") && value.endsWith("'")) {
+    return value.slice(1, -1).replace(/''/g, "'");
   }
   return value;
 }

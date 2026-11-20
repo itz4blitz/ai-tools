@@ -152,8 +152,16 @@ class CopilotMCPAdapter extends BaseMCPAdapter {
 }
 
 function mergeCopilotMcpJson(existingRaw: string, generatedRaw: string): string {
-  const existing = JSON.parse(existingRaw) as Record<string, unknown>;
   const generated = JSON.parse(generatedRaw) as { servers?: Record<string, unknown> };
+  let existing: Record<string, unknown> = {};
+  try {
+    const parsed: unknown = JSON.parse(existingRaw);
+    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+      existing = parsed as Record<string, unknown>;
+    }
+  } catch {
+    existing = {};
+  }
   const currentServers =
     existing.servers !== null &&
     typeof existing.servers === "object" &&

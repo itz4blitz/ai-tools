@@ -71,11 +71,11 @@ function formatRule(rule: RuleDefinition): string {
   if (rule.scope.type === "always") {
     fmLines.push('applyTo: "**"');
   } else if (rule.scope.type === "glob" && rule.scope.patterns.length > 0) {
-    fmLines.push(`applyTo: "${rule.scope.patterns.join(",")}"`);
+    fmLines.push(`applyTo: ${JSON.stringify(rule.scope.patterns.join(","))}`);
   }
 
   if (rule.description) {
-    fmLines.push(`description: ${rule.description}`);
+    fmLines.push(`description: ${formatYamlScalar(rule.description)}`);
   }
 
   let md = "";
@@ -158,12 +158,25 @@ function extractHeadingAndBody(
   };
 }
 
+function formatYamlScalar(value: string): string {
+  if (/[:#"'`\r\n]|^\s|\s$|^[*&![\]{}>|?-]/.test(value)) {
+    return JSON.stringify(value);
+  }
+  return value;
+}
+
 function stripQuotes(value: string): string {
-  if (
-    (value.startsWith('"') && value.endsWith('"')) ||
-    (value.startsWith("'") && value.endsWith("'"))
-  ) {
-    return value.slice(1, -1);
+  if (value.length < 2) return value;
+  if (value.startsWith('"') && value.endsWith('"')) {
+    try {
+      const parsed = JSON.parse(value);
+      return typeof parsed === "string" ? parsed : value.slice(1, -1);
+    } catch {
+      return value.slice(1, -1);
+    }
+  }
+  if (value.startsWith("'") && value.endsWith("'")) {
+    return value.slice(1, -1).replace(/''/g, "'");
   }
   return value;
 }

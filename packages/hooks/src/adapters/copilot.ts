@@ -385,7 +385,8 @@ async function run() {
   let input = {};
   try {
     const raw = await readStdin();
-    input = JSON.parse(raw || "{}");
+    const parsed = JSON.parse(raw || "{}");
+    input = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
   } catch {
     input = {};
   }

@@ -60,18 +60,18 @@ class CopilotAgentAdapter extends BaseAgentAdapter {
 }
 
 function formatAgent(agent: AgentDefinition): string {
-  const lines: string[] = ["---", `name: ${agent.name}`];
+  const lines: string[] = ["---", `name: ${formatYamlScalar(agent.name)}`];
   if (agent.description) {
-    lines.push(`description: ${agent.description}`);
+    lines.push(`description: ${formatYamlScalar(agent.description)}`);
   }
   if (agent.tools && agent.tools.length > 0) {
     lines.push("tools:");
     for (const tool of agent.tools) {
-      lines.push(`  - ${tool}`);
+      lines.push(`  - ${formatYamlScalar(tool)}`);
     }
   }
   if (agent.model) {
-    lines.push(`model: ${agent.model}`);
+    lines.push(`model: ${formatYamlScalar(agent.model)}`);
   }
   lines.push("---", "", agent.instructions);
   return `${lines.join("\n")}\n`;
@@ -94,15 +94,17 @@ function parseAgent(id: string, raw: string): AgentDefinition {
   for (const line of fm.split(/\r?\n/)) {
     const listMatch = /^\s*-\s+(.+)$/.exec(line);
     if (listMatch) {
-      const item = stripQuotes((listMatch[1] ?? "").trim());
-      if (item) currentArray.push(item);
+      if (currentKey === "tools") {
+        const item = stripQuotes((listMatch[1] ?? "").trim());
+        if (item) currentArray.push(item);
+      }
       continue;
     }
 
     if (currentKey === "tools" && currentArray.length > 0) {
       agent.tools = currentArray;
-      currentArray = [];
     }
+    currentArray = [];
 
     const colonIdx = line.indexOf(":");
     if (colonIdx === -1) continue;
@@ -154,12 +156,25 @@ function parseBodyOnly(id: string, raw: string): AgentDefinition {
   };
 }
 
+function formatYamlScalar(value: string): string {
+  if (/[:#"'`\r\n]|^\s|\s$|^[*&![\]{}>|?-]/.test(value)) {
+    return JSON.stringify(value);
+  }
+  return value;
+}
+
 function stripQuotes(value: string): string {
-  if (
-    (value.startsWith('"') && value.endsWith('"')) ||
-    (value.startsWith("'") && value.endsWith("'"))
-  ) {
-    return value.slice(1, -1);
+  if (value.length < 2) return value;
+  if (value.startsWith('"') && value.endsWith('"')) {
+    try {
+      const parsed = JSON.parse(value);
+      return typeof parsed === "string" ? parsed : value.slice(1, -1);
+    } catch {
+      return value.slice(1, -1);
+    }
+  }
+  if (value.startsWith("'") && value.endsWith("'")) {
+    return value.slice(1, -1).replace(/''/g, "'");
   }
   return value;
 }

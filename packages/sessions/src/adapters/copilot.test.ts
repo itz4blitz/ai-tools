@@ -172,6 +172,35 @@ describe("CopilotSessionAdapter", () => {
       });
     });
 
+    it("skips null and non-string VS Code response parts without dropping the session", async () => {
+      const wsDir = join(resolveVsCodeWorkspaceStoragePath(), "ws-hash-rich", "chatSessions");
+      await mkdir(wsDir, { recursive: true });
+
+      await writeFile(
+        join(wsDir, "rich.json"),
+        JSON.stringify({
+          sessionId: "vscode-rich-1",
+          requests: [
+            {
+              message: { text: "Check rich parts" },
+              response: [
+                null,
+                { kind: "treeData", value: { nested: true } },
+                { value: "Valid text." },
+              ],
+            },
+          ],
+        }),
+      );
+
+      const sessions = await adapter.parseSessions();
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0]?.messages).toEqual([
+        { role: "user", content: "Check rich parts", timestamp: undefined },
+        { role: "assistant", content: "Valid text.", timestamp: undefined },
+      ]);
+    });
+
     it("parses legacy ~/.config/github-copilot/*.json alongside new locations", async () => {
       const legacyDir = join(tempHome, ".config", "github-copilot");
       await mkdir(legacyDir, { recursive: true });

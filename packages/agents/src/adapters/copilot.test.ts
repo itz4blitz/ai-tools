@@ -95,6 +95,37 @@ describe("CopilotAgentAdapter", () => {
       });
     });
 
+    it("does not leak non-tools YAML lists into agent.tools and handles special YAML chars", async () => {
+      const agentsDir = join(tempDir, ".github/agents");
+      await mkdir(agentsDir, { recursive: true });
+      await writeFile(
+        join(agentsDir, "handoff.agent.md"),
+        [
+          "---",
+          'name: "Reviewer: Strict"',
+          'description: "Checks #1: edge cases"',
+          "tags:",
+          "  - security",
+          "  - review",
+          "tools:",
+          "  - read",
+          "---",
+          "",
+          "Audit carefully.",
+        ].join("\n"),
+      );
+
+      const imported = await adapter.import(tempDir);
+      expect(imported).toHaveLength(1);
+      expect(imported[0]).toEqual({
+        id: "handoff",
+        name: "Reviewer: Strict",
+        description: "Checks #1: edge cases",
+        tools: ["read"],
+        instructions: "Audit carefully.",
+      });
+    });
+
     it("returns empty array when config dir is missing", async () => {
       expect(await adapter.import(tempDir)).toEqual([]);
     });
