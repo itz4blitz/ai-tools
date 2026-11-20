@@ -233,5 +233,73 @@ describe("RooCodeSessionAdapter", () => {
         expect(filtered[0]!.id).toBe("roo-code-task-new");
       });
     });
+
+    it("handles win32 empty APPDATA, linux XDG_CONFIG_HOME, tool_use-only messages, array tool_result, cwd & stat fallbacks, and malformed task_metadata", async () => {
+      expect(resolveRooCodeTasksPath("win32", { APPDATA: "" }, "C:\\Users\\dev")).toBe(
+        join(
+          "C:\\Users\\dev",
+          "AppData",
+          "Roaming",
+          "Code",
+          "User",
+          "globalStorage",
+          "rooveterinaryinc.roo-cline",
+          "tasks",
+        ),
+      );
+      expect(resolveRooCodeTasksPath("linux", { XDG_CONFIG_HOME: "/xdg/cfg" }, "/home/dev")).toBe(
+        join("/xdg/cfg", "Code", "User", "globalStorage", "rooveterinaryinc.roo-cline", "tasks"),
+      );
+
+      await withTempDir(async (dir) => {
+        const taskDir = join(dir, "task-edge");
+        await mkdir(taskDir, { recursive: true });
+
+        await writeFile(
+          join(taskDir, "api_conversation_history.json"),
+          JSON.stringify([
+            { role: "user", content: "Run check" },
+            {
+              role: "assistant",
+              content: [{ type: "tool_use", name: "execute_command", input: { command: "ls" } }],
+            },
+            {
+              role: "user",
+              content: [{ type: "tool_result", content: [{ type: "text", text: "README.md" }] }],
+            },
+          ]),
+          "utf-8",
+        );
+
+        await writeFile(
+          join(taskDir, "history_item.json"),
+          JSON.stringify({ cwd: "/repo/cwd-fallback", ts: "not-a-number" }),
+          "utf-8",
+        );
+
+        await writeFile(
+          join(taskDir, "task_metadata.json"),
+          JSON.stringify({ files_in_context: "malformed" }),
+          "utf-8",
+        );
+
+        const adapter = new RooCodeSessionAdapter([dir]);
+        const sessions = await adapter.parseSessions();
+        expect(sessions).toHaveLength(1);
+        const session = sessions[0]!;
+        expect(session.projectPath).toBe("/repo/cwd-fallback");
+        expect(Number.isNaN(Date.parse(session.startedAt))).toBe(false);
+        expect(Number.isNaN(Date.parse(session.updatedAt))).toBe(false);
+        expect(session.messages[1]).toEqual({
+          role: "assistant",
+          content: "[tool_use: execute_command]",
+          toolName: "execute_command",
+        });
+        expect(session.messages[2]).toEqual({
+          role: "tool",
+          content: "README.md",
+        });
+      });
+    });
   });
 });

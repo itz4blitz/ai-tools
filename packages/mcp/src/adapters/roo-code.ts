@@ -16,7 +16,7 @@ export function resolveRooCodeUserConfigPath(
   home: string = homedir(),
 ): string {
   if (platform === "win32") {
-    const appData = env.APPDATA ?? join(home, "AppData", "Roaming");
+    const appData = env.APPDATA || join(home, "AppData", "Roaming");
     return join(
       appData,
       "Code",

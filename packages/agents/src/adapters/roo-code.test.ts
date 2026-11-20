@@ -294,7 +294,7 @@ describe("RooCodeAgentAdapter", () => {
       });
     });
 
-    it("merges incoming modes by slug when existing .roomodes is YAML", async () => {
+    it("merges incoming modes by slug when existing .roomodes is YAML and preserves tuple group options", async () => {
       await withTempDir(async (dir) => {
         await writeFile(
           join(dir, ".roomodes"),
@@ -302,9 +302,24 @@ describe("RooCodeAgentAdapter", () => {
             "customModes:",
             "  - slug: existing-yaml",
             "    name: Existing YAML",
-            "    roleDefinition: Stay around.",
+            "    roleDefinition: >-",
+            "      Stay around",
+            "      and guard docs.",
             "    groups:",
             "      - read",
+            "      - - edit",
+            "        - fileRegex: \\.md$",
+            '          description: "Markdown only"',
+            '      - ["command", { description: "Run diagnostics" }]',
+            "  - groups: [read, [edit, { fileRegex: '\\.ts$' }]]",
+            "    slug: groups-first",
+            "    name: Groups First",
+            "    roleDefinition: Mode with groups first.",
+            "  -",
+            "    slug: bare-dash",
+            "    name: Bare Dash",
+            "    roleDefinition: Mode under bare dash.",
+            "    groups: [read]",
             "",
           ].join("\n"),
           "utf-8",
@@ -312,8 +327,35 @@ describe("RooCodeAgentAdapter", () => {
 
         await adapter.install(await adapter.generate([testAgent]), dir);
 
+        const parsed = JSON.parse(await readFile(join(dir, ".roomodes"), "utf-8")) as {
+          customModes: Array<{
+            slug: string;
+            roleDefinition: string;
+            groups?: unknown[];
+          }>;
+        };
+        expect(parsed.customModes.map((m) => m.slug)).toEqual([
+          "existing-yaml",
+          "groups-first",
+          "bare-dash",
+          "reviewer",
+        ]);
+        expect(parsed.customModes[0]!.roleDefinition).toBe("Stay around and guard docs.");
+        expect(parsed.customModes[0]!.groups).toEqual([
+          "read",
+          ["edit", { fileRegex: "\\.md$", description: "Markdown only" }],
+          ["command", { description: "Run diagnostics" }],
+        ]);
+        expect(parsed.customModes[1]!.groups).toEqual(["read", ["edit", { fileRegex: "\\.ts$" }]]);
+
         const imported = await adapter.import(dir);
-        expect(imported.map((a) => a.id)).toEqual(["existing-yaml", "reviewer"]);
+        expect(imported.map((a) => a.id)).toEqual([
+          "existing-yaml",
+          "groups-first",
+          "bare-dash",
+          "reviewer",
+        ]);
+        expect(imported[1]!.tools).toEqual(["read", "edit"]);
       });
     });
   });

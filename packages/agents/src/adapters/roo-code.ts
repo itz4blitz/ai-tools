@@ -217,20 +217,7 @@ function stripInlineYamlComment(value: string): string {
   return value.trimEnd();
 }
 
-function parseFlowGroups(raw: string): RooGroupEntry[] {
-  const trimmed = raw.trim();
-  if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) return [];
-
-  try {
-    const parsed = JSON.parse(trimmed) as unknown;
-    if (Array.isArray(parsed)) return parsed as RooGroupEntry[];
-  } catch {
-    // Handle unquoted YAML flow arrays like [read, edit, ["command", { description: "Run" }]]
-  }
-
-  const inner = trimmed.slice(1, -1).trim();
-  if (!inner) return [];
-
+function splitTopLevelFlowItems(inner: string): string[] {
   const items: string[] = [];
   let depth = 0;
   let inSingle = false;
@@ -254,14 +241,87 @@ function parseFlowGroups(raw: string): RooGroupEntry[] {
   }
   const tail = inner.slice(start).trim();
   if (tail) items.push(tail);
+  return items;
+}
 
+function parseFlowObject(raw: string): Record<string, unknown> {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) return {};
+
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // Handle unquoted YAML flow objects like { fileRegex: "\\.md$", description: "Docs only" }
+  }
+
+  const inner = trimmed.slice(1, -1).trim();
+  if (!inner) return {};
+
+  const result: Record<string, unknown> = {};
+  for (const pair of splitTopLevelFlowItems(inner)) {
+    const colonIdx = pair.indexOf(":");
+    if (colonIdx === -1) continue;
+    const key = unquoteYamlScalar(pair.slice(0, colonIdx));
+    const valRaw = pair.slice(colonIdx + 1).trim();
+    if (!key) continue;
+    if (valRaw === "true") result[key] = true;
+    else if (valRaw === "false") result[key] = false;
+    else if (valRaw === "null") result[key] = null;
+    else if (/^-?\d+(?:\.\d+)?$/.test(valRaw)) result[key] = Number(valRaw);
+    else result[key] = unquoteYamlScalar(valRaw);
+  }
+  return result;
+}
+
+function parseFlowTuple(raw: string): [string, Record<string, unknown>] | null {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) return null;
+
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (Array.isArray(parsed) && typeof parsed[0] === "string" && parsed[0].length > 0) {
+      const opts =
+        parsed[1] !== null && typeof parsed[1] === "object" && !Array.isArray(parsed[1])
+          ? (parsed[1] as Record<string, unknown>)
+          : {};
+      return [parsed[0], opts];
+    }
+  } catch {
+    // Fall back to YAML flow tuple parsing
+  }
+
+  const inner = trimmed.slice(1, -1).trim();
+  if (!inner) return null;
+  const items = splitTopLevelFlowItems(inner);
+  const first = items[0] ? unquoteYamlScalar(items[0]) : "";
+  if (!first) return null;
+  const opts = items[1] && items[1].startsWith("{") ? parseFlowObject(items[1]) : {};
+  return [first, opts];
+}
+
+function parseFlowGroups(raw: string): RooGroupEntry[] {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) return [];
+
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (Array.isArray(parsed)) return parsed as RooGroupEntry[];
+  } catch {
+    // Handle unquoted YAML flow arrays like [read, edit, ["command", { description: "Run" }]]
+  }
+
+  const inner = trimmed.slice(1, -1).trim();
+  if (!inner) return [];
+
+  const items = splitTopLevelFlowItems(inner);
   const groups: RooGroupEntry[] = [];
   for (const item of items) {
     if (item.startsWith("[") && item.endsWith("]")) {
-      const tupleItems = parseFlowGroups(item);
-      if (typeof tupleItems[0] === "string") {
-        groups.push([tupleItems[0], {}]);
-      }
+      const tuple = parseFlowTuple(item);
+      if (tuple) groups.push(tuple);
     } else if (item.length > 0 && !item.startsWith("{")) {
       groups.push(unquoteYamlScalar(item));
     }
@@ -315,15 +375,29 @@ function parseRoomodesYaml(raw: string): RooCustomMode[] {
       break;
     }
 
-    const isNewMode = trimmed.startsWith("- ") && (itemIndent === -1 || indent === itemIndent);
+    const isNewMode =
+      (trimmed === "-" || trimmed.startsWith("- ")) && (itemIndent === -1 || indent === itemIndent);
 
     if (isNewMode) {
       if (current) modes.push(current);
       itemIndent = indent;
       current = { slug: "", name: "", roleDefinition: "" };
 
-      const rest = trimmed.slice(2).trim();
+      const rest = trimmed.slice(1).trim();
       if (rest) {
+        const restColonIdx = rest.indexOf(":");
+        if (restColonIdx !== -1 && rest.slice(0, restColonIdx).trim() === "groups") {
+          const restAfterColon = stripInlineYamlComment(rest.slice(restColonIdx + 1)).trim();
+          if (restAfterColon.startsWith("[")) {
+            current.groups = parseFlowGroups(restAfterColon);
+            i++;
+          } else {
+            const result = parseYamlGroupsBlock(lines, i + 1, indent + 2);
+            current.groups = result.groups;
+            i = result.nextIndex;
+          }
+          continue;
+        }
         const parsed = parseKeyValueLine(rest, lines, i, indent + 2);
         applyModeField(current, parsed.key, parsed.value);
         i = parsed.nextIndex;
@@ -492,9 +566,9 @@ function parseYamlGroupsBlock(
     }
 
     if (itemContent.startsWith("[") && itemContent.endsWith("]")) {
-      const tuple = parseFlowGroups(itemContent);
-      if (typeof tuple[0] === "string") {
-        groups.push([tuple[0], {}]);
+      const tuple = parseFlowTuple(itemContent);
+      if (tuple) {
+        groups.push(tuple);
       }
       i++;
       continue;

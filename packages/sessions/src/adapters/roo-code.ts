@@ -49,7 +49,7 @@ export function resolveRooCodeTasksPath(
   home: string = homedir(),
 ): string {
   if (platform === "win32") {
-    const appData = env.APPDATA ?? join(home, "AppData", "Roaming");
+    const appData = env.APPDATA || join(home, "AppData", "Roaming");
     return join(appData, "Code", "User", "globalStorage", ROO_EXTENSION_ID, "tasks");
   }
 
@@ -149,15 +149,21 @@ class RooCodeSessionAdapter extends BaseSessionAdapter {
     );
 
     const fileStat = await stat(historyFile);
-    const firstTs = historyItem?.ts ?? timestamps[0];
-    const lastTs = timestamps[timestamps.length - 1] ?? historyItem?.ts;
+    const historyTs =
+      typeof historyItem?.ts === "number" && Number.isFinite(historyItem.ts)
+        ? historyItem.ts
+        : undefined;
+    const firstTs = historyTs ?? timestamps[0];
+    const lastTs = timestamps[timestamps.length - 1] ?? historyTs;
 
     const startedAt =
-      typeof firstTs === "number"
+      typeof firstTs === "number" && Number.isFinite(firstTs)
         ? new Date(firstTs).toISOString()
         : fileStat.birthtime.toISOString();
     const updatedAt =
-      typeof lastTs === "number" ? new Date(lastTs).toISOString() : fileStat.mtime.toISOString();
+      typeof lastTs === "number" && Number.isFinite(lastTs)
+        ? new Date(lastTs).toISOString()
+        : fileStat.mtime.toISOString();
 
     const sessionId = `roo-code-${historyItem?.id ?? taskId}`;
     const rawTitle =
@@ -171,9 +177,11 @@ class RooCodeSessionAdapter extends BaseSessionAdapter {
     if (typeof historyItem?.tokensOut === "number") metadata.tokensOut = historyItem.tokensOut;
     if (typeof historyItem?.totalCost === "number") metadata.totalCost = historyItem.totalCost;
 
-    const filesInContext = (taskMetadata?.files_in_context ?? [])
-      .map((f) => f.path)
-      .filter((p): p is string => typeof p === "string" && p.length > 0);
+    const filesInContext = Array.isArray(taskMetadata?.files_in_context)
+      ? taskMetadata.files_in_context
+          .map((f) => (f && typeof f === "object" ? f.path : undefined))
+          .filter((p): p is string => typeof p === "string" && p.length > 0)
+      : [];
     if (filesInContext.length > 0) {
       metadata.filesInContext = filesInContext;
     }
