@@ -19,7 +19,7 @@ const ADAPTER_SUPPORT: Record<string, Record<PluginEngine, boolean>> = {
   kiro: { mcp: true, skills: true, rules: true, agents: true, hooks: true },
   cline: { mcp: true, skills: true, rules: true, agents: true, hooks: true },
   droid: { mcp: true, skills: true, rules: true, agents: true, hooks: true },
-  amp: { mcp: true, skills: true, rules: true, agents: false, hooks: false },
+  amp: { mcp: true, skills: true, rules: true, agents: false, hooks: true },
   continue: { mcp: false, skills: true, rules: true, agents: false, hooks: false },
   "gemini-cli": { mcp: true, skills: true, rules: true, agents: true, hooks: true },
   "roo-code": { mcp: true, skills: true, rules: true, agents: true, hooks: false },
@@ -47,6 +47,12 @@ describe("KNOWN_PLUGIN_HOSTS", () => {
 
   it("claims zcode hooks because packages/hooks registers a zcode adapter", () => {
     expect(KNOWN_PLUGIN_HOSTS.zcode?.nativeEngineSupport.hooks).toBe(true);
+  });
+
+  it("claims amp hooks and native bundles while keeping agents false", () => {
+    expect(KNOWN_PLUGIN_HOSTS.amp?.nativeEngineSupport.hooks).toBe(true);
+    expect(KNOWN_PLUGIN_HOSTS.amp?.nativeEngineSupport.agents).toBe(false);
+    expect(KNOWN_PLUGIN_HOSTS.amp?.supportsNativeBundles).toBe(true);
   });
 
   it("fills every PluginEngine key on each host", () => {
