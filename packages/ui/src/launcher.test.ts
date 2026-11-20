@@ -107,6 +107,26 @@ describe("launchTool", () => {
     );
   });
 
+  it("disables shell when args contain multiline content or shell metacharacters", async () => {
+    const child = createMockChild(1);
+    const mockSpawn = createMockSpawn(child);
+
+    const promise = launchTool(
+      { command: "claude", args: ["# Handoff\nbody | whoami"] },
+      mockSpawn,
+    );
+    child.emit("close", 0);
+    await promise;
+
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "claude",
+      ["# Handoff\nbody | whoami"],
+      expect.objectContaining({
+        shell: false,
+      }),
+    );
+  });
+
   it("defaults pid to 0 when undefined", async () => {
     const emitter = new EventEmitter();
     (emitter as unknown as Record<string, unknown>).pid = undefined;

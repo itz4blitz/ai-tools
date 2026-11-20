@@ -138,4 +138,13 @@ describe("spawnTool", () => {
       shell: process.platform === "win32",
     });
   });
+
+  it("disables shell when args contain multiline content or cmd.exe metacharacters", () => {
+    spawnTool("claude", ["# Handoff\nline2 & calc"]);
+    expect(vi.mocked(spawn)).toHaveBeenCalledWith("claude", ["# Handoff\nline2 & calc"], {
+      stdio: "inherit",
+      cwd: undefined,
+      shell: false,
+    });
+  });
 });

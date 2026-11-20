@@ -16,6 +16,8 @@ export type LaunchResult = {
 
 export type SpawnFn = (command: string, args: string[], options: SpawnOptions) => ChildProcess;
 
+const UNSAFE_WIN32_SHELL_ARG = /[\r\n&|<>^%"]/;
+
 /**
  * Launch a tool in full-screen mode (inherits stdio).
  * Returns a promise that resolves when the process exits.
@@ -26,11 +28,13 @@ export function launchTool(
   spawnFn: SpawnFn = spawn,
 ): Promise<LaunchResult> {
   return new Promise((resolve, reject) => {
+    const useShell =
+      process.platform === "win32" && !options.args.some((arg) => UNSAFE_WIN32_SHELL_ARG.test(arg));
     const child = spawnFn(options.command, options.args, {
       stdio: "inherit",
       cwd: options.cwd ?? process.cwd(),
       env: options.env ?? process.env,
-      shell: process.platform === "win32",
+      shell: useShell,
     });
 
     const pid = child.pid ?? 0;

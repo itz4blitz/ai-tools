@@ -306,4 +306,34 @@ foo = "bar"
     expect(merged).toContain("[mcp_servers.linear.http_headers]");
     expect(merged).not.toContain("[mcp_servers.linear.headers]");
   });
+
+  it("preserves [[array_of_tables]] after stripped mcp_servers and prevents field bleed on parse", () => {
+    const source = `[mcp_servers.managed_old]
+command = "old-bin"
+
+[[projects]]
+command = "not-an-mcp-command"
+url = "https://project.example.com"
+enabled = false
+name = "web"
+`;
+    const parsed = parseMcpToml(source);
+    expect(parsed).toEqual([
+      {
+        id: "managed_old",
+        name: "managed_old",
+        transport: { type: "stdio", command: "old-bin" },
+      },
+    ]);
+
+    const merged = mergeMcpToml(
+      source,
+      [{ id: "github", name: "github", transport: { type: "stdio", command: "gh-mcp" } }],
+      ["managed_old", "github"],
+    );
+    expect(merged).not.toContain("managed_old");
+    expect(merged).toContain("[[projects]]");
+    expect(merged).toContain('name = "web"');
+    expect(merged).toContain("[mcp_servers.github]");
+  });
 });

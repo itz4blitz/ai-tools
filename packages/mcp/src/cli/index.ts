@@ -170,23 +170,28 @@ async function cmdGenerate(flags: Flags): Promise<void> {
       continue;
     }
 
-    const files = await adapter.generate(servers);
-    if (layer === "user" && adapter.userConfigPath) {
-      for (const file of files) {
-        file.path = adapter.userConfigPath;
+    try {
+      const files = await adapter.generate(servers);
+      if (layer === "user" && adapter.userConfigPath) {
+        for (const file of files) {
+          file.path = adapter.userConfigPath;
+        }
       }
-    }
 
-    for (const file of files) {
       if (flags.dryRun) {
-        console.log(`  [dry-run] Would write: ${file.path}`);
+        for (const file of files) {
+          console.log(`  [dry-run] Would write: ${file.path}`);
+        }
       } else {
-        console.log(`  Generated: ${file.path}`);
+        await adapter.install(files, layer === "user" ? homedir() : process.cwd());
+        for (const file of files) {
+          console.log(`  Generated: ${file.path}`);
+        }
       }
-    }
-
-    if (!flags.dryRun) {
-      await adapter.install(files, layer === "user" ? homedir() : process.cwd());
+    } catch (err) {
+      if (adapters.length === 1) throw err;
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`  \u2717 ${adapter.name}: skipped (${message})`);
     }
   }
 

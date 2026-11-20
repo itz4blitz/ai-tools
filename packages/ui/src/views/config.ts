@@ -1,4 +1,4 @@
-import { isAbsolute, relative } from "node:path";
+import { isAbsolute, relative, sep } from "node:path";
 import type { UiKit } from "../types.js";
 import type { EngineStatus, ToolDeployment, ManifestHealth } from "../widgets/config-dashboard.js";
 import type { ConfigLastAction } from "../runtime/state.js";
@@ -41,7 +41,7 @@ export type ConfigViewState = {
 function formatRelativePath(targetPath: string): string {
   const rel = relative(process.cwd(), targetPath);
   if (rel === "") return ".";
-  if (rel.startsWith("..") || isAbsolute(rel)) return targetPath;
+  if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return targetPath;
   return rel;
 }
 

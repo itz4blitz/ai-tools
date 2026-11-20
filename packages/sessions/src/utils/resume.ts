@@ -87,17 +87,23 @@ export function launchWithContext(
   return buildHandoffCommand(target.id, markdown);
 }
 
+const UNSAFE_WIN32_SHELL_ARG = /[\r\n&|<>^%"]/;
+
 /**
  * Spawn a tool process with handoff context.
+ * Only uses shell: true on Windows when arguments are free of cmd.exe metacharacters
+ * and newlines, avoiding prompt truncation and command injection.
  */
 export function spawnTool(
   command: string,
   args: string[],
   options?: { cwd?: string },
 ): ReturnType<typeof spawn> {
+  const useShell =
+    process.platform === "win32" && !args.some((arg) => UNSAFE_WIN32_SHELL_ARG.test(arg));
   return spawn(command, args, {
     stdio: "inherit",
     cwd: options?.cwd,
-    shell: process.platform === "win32",
+    shell: useShell,
   });
 }

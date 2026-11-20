@@ -8,7 +8,9 @@ function tomlString(value: string): string {
     .replaceAll('"', '\\"')
     .replaceAll("\n", "\\n")
     .replaceAll("\r", "\\r")
-    .replaceAll("\t", "\\t");
+    .replaceAll("\t", "\\t")
+    .replaceAll("\b", "\\b")
+    .replaceAll("\f", "\\f");
   return `"${escaped}"`;
 }
 
@@ -207,13 +209,22 @@ function parseHeaderSegments(headerContent: string): string[] {
   return segments;
 }
 
-function extractTableHeader(rawLine: string): string | null {
+type ParsedTableHeader = {
+  inner: string;
+  isArrayTable: boolean;
+};
+
+function extractTableHeader(rawLine: string): ParsedTableHeader | null {
   const line = stripInlineComment(rawLine).trim();
-  if (!line.startsWith("[") || !line.endsWith("]") || line.startsWith("[[")) {
-    return null;
+  if (line.startsWith("[[") && line.endsWith("]]")) {
+    const inner = line.slice(2, -2).trim();
+    return inner.length > 0 ? { inner, isArrayTable: true } : null;
   }
-  const inner = line.slice(1, -1).trim();
-  return inner.length > 0 ? inner : null;
+  if (line.startsWith("[") && line.endsWith("]")) {
+    const inner = line.slice(1, -1).trim();
+    return inner.length > 0 ? { inner, isArrayTable: false } : null;
+  }
+  return null;
 }
 
 function splitKeyValue(line: string): [string, string] | null {
@@ -393,9 +404,13 @@ export function parseMcpToml(source: string): MCPServerDefinition[] {
     const cleaned = stripInlineComment(rawLine).trim();
     if (cleaned === "") continue;
 
-    const headerInner = extractTableHeader(cleaned);
-    if (headerInner !== null) {
-      const segments = parseHeaderSegments(headerInner);
+    const header = extractTableHeader(cleaned);
+    if (header !== null) {
+      if (header.isArrayTable) {
+        currentSegments = null;
+        continue;
+      }
+      const segments = parseHeaderSegments(header.inner);
       currentSegments = segments;
       if (segments[0] === "mcp_servers" && segments.length >= 2 && segments[1] !== undefined) {
         getBucket(segments[1]);
@@ -493,10 +508,10 @@ function stripTomlTablesWhere(source: string, shouldSkip: (segments: string[]) =
 
   for (const line of lines) {
     const trimmed = line.trim();
-    const headerInner = extractTableHeader(trimmed);
-    if (headerInner !== null) {
-      const segments = parseHeaderSegments(headerInner);
-      const nextSkip = shouldSkip(segments);
+    const header = extractTableHeader(trimmed);
+    if (header !== null) {
+      const segments = parseHeaderSegments(header.inner);
+      const nextSkip = header.isArrayTable ? false : shouldSkip(segments);
       if (!nextSkip && pendingComments.length > 0) {
         if (kept.length > 0 && kept[kept.length - 1]?.trim() !== "") {
           kept.push("");
@@ -524,6 +539,13 @@ function stripTomlTablesWhere(source: string, shouldSkip: (segments: string[]) =
     }
 
     kept.push(line);
+  }
+
+  if (pendingComments.length > 0) {
+    if (kept.length > 0 && kept[kept.length - 1]?.trim() !== "") {
+      kept.push("");
+    }
+    kept.push(...pendingComments);
   }
 
   return kept
