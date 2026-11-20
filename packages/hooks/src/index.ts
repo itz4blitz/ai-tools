@@ -15,6 +15,7 @@ export { executeChain, HookTimeoutError } from "./runtime/index.js";
 // Adapter system
 export { registry } from "./adapters/index.js";
 export { BaseAdapter } from "./adapters/index.js";
+export { runAntigravityCliHook } from "./adapters/antigravity-cli-runner.js";
 export { runGrokHook } from "./adapters/grok-runner.js";
 export { runZcodeHook } from "./adapters/zcode-runner.js";
 

@@ -13,7 +13,7 @@ const ADAPTER_SUPPORT: Record<string, Record<PluginEngine, boolean>> = {
   opencode: { mcp: true, skills: true, rules: true, agents: true, hooks: true },
   grok: { mcp: true, skills: true, rules: true, agents: true, hooks: true },
   zcode: { mcp: true, skills: true, rules: true, agents: true, hooks: true },
-  "antigravity-cli": { mcp: false, skills: true, rules: true, agents: true, hooks: false },
+  "antigravity-cli": { mcp: true, skills: true, rules: true, agents: true, hooks: true },
   windsurf: { mcp: true, skills: true, rules: true, agents: false, hooks: false },
   copilot: { mcp: true, skills: true, rules: true, agents: true, hooks: false },
   kiro: { mcp: true, skills: true, rules: true, agents: true, hooks: true },
@@ -40,9 +40,9 @@ describe("KNOWN_PLUGIN_HOSTS", () => {
     }
   });
 
-  it("does not claim antigravity MCP/hooks without adapters", () => {
-    expect(KNOWN_PLUGIN_HOSTS["antigravity-cli"]?.nativeEngineSupport.mcp).toBe(false);
-    expect(KNOWN_PLUGIN_HOSTS["antigravity-cli"]?.nativeEngineSupport.hooks).toBe(false);
+  it("claims antigravity-cli MCP and hooks because both adapters exist", () => {
+    expect(KNOWN_PLUGIN_HOSTS["antigravity-cli"]?.nativeEngineSupport.mcp).toBe(true);
+    expect(KNOWN_PLUGIN_HOSTS["antigravity-cli"]?.nativeEngineSupport.hooks).toBe(true);
   });
 
   it("claims zcode hooks because packages/hooks registers a zcode adapter", () => {

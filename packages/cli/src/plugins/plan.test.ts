@@ -182,7 +182,7 @@ describe("buildPluginInstallPlan", () => {
     );
   });
 
-  it("marks antigravity-cli MCP as host-unsupported because no MCP adapter exists", async () => {
+  it("marks antigravity-cli MCP as adapter-missing until the MCP registry lists antigravity-cli", async () => {
     const plan = await buildPluginInstallPlan(
       {
         id: "cert-coach",
@@ -203,8 +203,9 @@ describe("buildPluginInstallPlan", () => {
       },
     );
 
+    expect(plan.targets[0]?.host.nativeEngineSupport.mcp).toBe(true);
     expect(plan.targets[0]?.engines.find((item) => item.engine === "mcp")?.status).toBe(
-      "host-unsupported",
+      "adapter-missing",
     );
   });
 });
