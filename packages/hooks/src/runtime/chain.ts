@@ -42,12 +42,17 @@ export async function executeChain(
       return; // Stop chain on block
     }
 
-    await Promise.race([
-      Promise.resolve(hook.handler(ctx, next)),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new HookTimeoutError(hook.id, timeout)), timeout),
-      ),
-    ]);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        Promise.resolve(hook.handler(ctx, next)),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new HookTimeoutError(hook.id, timeout)), timeout);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
   };
 
   try {

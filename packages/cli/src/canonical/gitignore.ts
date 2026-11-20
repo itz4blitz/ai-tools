@@ -11,6 +11,7 @@ const MANAGED_BLOCK = `${START_MARKER}
 .opencode/
 .gemini/
 .cline/
+.clinerules/
 .factory/
 .codex/
 .kiro/
@@ -19,7 +20,9 @@ const MANAGED_BLOCK = `${START_MARKER}
 .zcode/
 .continue/
 .roo/
+.roomodes
 .agents/
+.windsurf/
 ${END_MARKER}`;
 
 export async function addManagedBlock(cwd?: string): Promise<void> {

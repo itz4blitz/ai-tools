@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { executeChain, HookTimeoutError } from "./chain.js";
 import type { HookDefinition, HookContext, HookEvent } from "../types/index.js";
 
@@ -208,6 +208,25 @@ describe("executeChain", () => {
     expect(results).toHaveLength(1);
     expect(results[0]?.blocked).toBe(false);
     expect(results[0]?.reason).toContain("timed out");
+  });
+
+  it("clears the timeout timer when a hook resolves before timing out", async () => {
+    const clearSpy = vi.spyOn(globalThis, "clearTimeout");
+    const hooks: HookDefinition[] = [
+      {
+        id: "fast",
+        name: "fast",
+        events: ["shell:before"],
+        phase: "before",
+        handler: async (_ctx, next) => {
+          await next();
+        },
+      },
+    ];
+
+    await executeChain(hooks, makeCtx(), 5000);
+    expect(clearSpy).toHaveBeenCalled();
+    clearSpy.mockRestore();
   });
 
   it("propagates non-timeout errors", async () => {

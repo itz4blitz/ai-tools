@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Universal hook engine and configuration management for AI coding tools. Monorepo (`@itz4blitz/*`) providing a unified event/hook system that translates to 9+ AI tool-specific formats (Claude Code, Codex, Cursor, Gemini CLI, Kiro, OpenCode, Cline, Factory Droid, Amp).
+Universal hook engine, configuration management, session handoff, and interactive terminal dashboard for AI coding tools. Monorepo (`@itz4blitz/*`) providing a unified configuration and runtime system across 17 supported AI coding harnesses (Claude Code, Claude Desktop, Cursor, Codex, OpenCode, Gemini CLI, Cline, Factory Droid, Kiro, Amp, Grok, ZCode, Windsurf, GitHub Copilot, Roo Code, Continue, Antigravity CLI).
 
 ## Commands
 
@@ -26,18 +26,20 @@ npm run typecheck      # tsc across all packages (turbo)
 
 ### Monorepo Structure
 
-Six packages managed by npm workspaces + Turborepo:
+Eight packages managed by npm workspaces + Turborepo:
 
-| Package | npm name | Purpose |
-|---------|----------|---------|
-| `packages/hooks` | `@itz4blitz/ai-tools-hooks` | Core engine: hook engine, adapters, config loader, built-in hooks |
-| `packages/mcp` | `@itz4blitz/ai-tools-mcp` | MCP server configuration management |
-| `packages/agents` | `@itz4blitz/ai-tools-agents` | Agent configuration for AI tools |
-| `packages/skills` | `@itz4blitz/ai-tools-skills` | Skills/prompts configuration |
-| `packages/rules` | `@itz4blitz/ai-tools-rules` | Project rules configuration |
-| `packages/cli` | `@itz4blitz/ai-tools` | Unified CLI routing to all engines |
+| Package             | npm name                       | Purpose                                                           |
+| ------------------- | ------------------------------ | ----------------------------------------------------------------- |
+| `packages/hooks`    | `@itz4blitz/ai-tools-hooks`    | Core engine: hook engine, adapters, config loader, built-in hooks |
+| `packages/mcp`      | `@itz4blitz/ai-tools-mcp`      | MCP server configuration management                               |
+| `packages/agents`   | `@itz4blitz/ai-tools-agents`   | Agent configuration for AI tools                                  |
+| `packages/skills`   | `@itz4blitz/ai-tools-skills`   | Skills/prompts configuration                                      |
+| `packages/rules`    | `@itz4blitz/ai-tools-rules`    | Project rules configuration                                       |
+| `packages/sessions` | `@itz4blitz/ai-tools-sessions` | Cross-tool session reading and context handoff                    |
+| `packages/ui`       | `@itz4blitz/ai-tools-tui`      | Interactive terminal dashboard (Rezi UI)                          |
+| `packages/cli`      | `@itz4blitz/ai-tools`          | Unified CLI routing to all engines, plugins, sessions, and TUI    |
 
-The `cli` package depends on all others. The other five packages are independent of each other.
+The `cli` package depends on all others, and `ui` depends on `sessions`. The other six packages are independent of each other.
 
 ### Repeated Package Pattern
 

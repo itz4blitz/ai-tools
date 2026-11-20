@@ -224,6 +224,105 @@ describe("installPluginBundle", () => {
     ]);
   });
 
+  it("normalizes Windows backslashes when matching whenPathContains", async () => {
+    const mcpAdapter = adapter([{ path: ".codex/mcp.json", content: "{}", format: "json" }]);
+    loadEngineRegistries.mockResolvedValue({
+      mcp: { get: () => mcpAdapter },
+      skills: { get: () => undefined },
+      rules: { get: () => undefined },
+      agents: { get: () => undefined },
+      hooks: { get: () => undefined },
+    });
+    const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue("C:\\Users\\dev\\repos\\acme\\backend");
+    const { installPluginBundle } = await import("./install.js");
+
+    await installPluginBundle(
+      {
+        ...plugin,
+        mcpServers: [
+          {
+            id: "acme",
+            name: "Acme",
+            transport: { type: "stdio", command: "acme-mcp" },
+            layer: "project",
+            whenPathContains: ["repos/acme"],
+          },
+        ],
+      },
+      { tools: ["codex"] },
+    );
+
+    cwdSpy.mockRestore();
+    expect(mcpAdapter.generate).toHaveBeenCalledWith([expect.objectContaining({ id: "acme" })]);
+  });
+
+  it("installs user-layer MCP servers and skills when layer is 'user'", async () => {
+    const { homedir } = await import("node:os");
+    const mcpAdapter = {
+      ...adapter([{ path: ".codex/mcp.json", content: "{}", format: "json" }]),
+      userConfigPath: "/home/user/.codex/config.toml",
+    };
+    const skillsAdapter = adapter([
+      { path: ".codex/skills/tdd/SKILL.md", content: "Test first.", format: "md" },
+    ]);
+    loadEngineRegistries.mockResolvedValue({
+      mcp: { get: () => mcpAdapter },
+      skills: { get: () => skillsAdapter },
+      rules: { get: () => undefined },
+      agents: { get: () => undefined },
+      hooks: { get: () => undefined },
+    });
+    const { installPluginBundle } = await import("./install.js");
+
+    const result = await installPluginBundle(
+      {
+        ...plugin,
+        mcpServers: [
+          {
+            id: "project-only",
+            name: "Project Only",
+            transport: { type: "stdio", command: "proj-mcp" },
+            layer: "project",
+          },
+          {
+            id: "user-global",
+            name: "User Global",
+            transport: { type: "stdio", command: "user-mcp" },
+            layer: "user",
+          },
+        ],
+      },
+      { tools: ["codex"], layer: "user" },
+    );
+
+    expect(mcpAdapter.generate).toHaveBeenCalledWith([
+      expect.objectContaining({ id: "user-global" }),
+    ]);
+    expect(mcpAdapter.install).toHaveBeenCalledWith(
+      [expect.objectContaining({ path: "/home/user/.codex/config.toml" })],
+      homedir(),
+    );
+    expect(skillsAdapter.generate).toHaveBeenCalledWith(plugin.skills, "user");
+    expect(skillsAdapter.install).toHaveBeenCalledWith(
+      [{ path: ".codex/skills/tdd/SKILL.md", content: "Test first.", format: "md" }],
+      homedir(),
+    );
+    expect(result.installed).toEqual([
+      {
+        toolId: "codex",
+        toolName: "Codex",
+        engine: "mcp",
+        filePaths: ["/home/user/.codex/config.toml"],
+      },
+      {
+        toolId: "codex",
+        toolName: "Codex",
+        engine: "skills",
+        filePaths: [".codex/skills/tdd/SKILL.md"],
+      },
+    ]);
+  });
+
   it("skips MCP install instead of writing an empty config when every server is filtered out", async () => {
     const mcpAdapter = adapter([{ path: ".codex/mcp.json", content: "{}", format: "json" }]);
     loadEngineRegistries.mockResolvedValue({

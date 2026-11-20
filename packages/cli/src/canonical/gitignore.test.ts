@@ -45,8 +45,11 @@ describe("addManagedBlock", () => {
     const written = mockWriteFile.mock.calls[0]?.[1] as string;
     expect(written).toContain(".claude/");
     expect(written).toContain(".cursor/");
+    expect(written).toContain(".clinerules/");
     expect(written).toContain(".grok/");
     expect(written).toContain(".zcode/");
+    expect(written).toContain(".roomodes");
+    expect(written).toContain(".windsurf/");
     expect(written).toContain("end ai-tools managed");
   });
 

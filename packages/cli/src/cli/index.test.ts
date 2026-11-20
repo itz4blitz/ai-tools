@@ -159,9 +159,23 @@ describe("run() - engine delegation", () => {
     expect(mockPluginsRun).toHaveBeenCalledWith(["plan"]);
   });
 
+  it("delegates 'plugin' alias to plugins engine", async () => {
+    await run(["plugin", "plan", "--tools=codex"]);
+    expect(mockPluginsRun).toHaveBeenCalledWith(["plan", "--tools=codex"]);
+  });
+
   it("delegates to sessions engine", async () => {
     await run(["sessions", "list"]);
     expect(mockSessionsRun).toHaveBeenCalledWith(["list"]);
+  });
+
+  it("prints package version for --version and -v", async () => {
+    await run(["--version"]);
+    expect(allLog()).toMatch(/^\d+\.\d+\.\d+/);
+
+    logOutput = [];
+    await run(["-v"]);
+    expect(allLog()).toMatch(/^\d+\.\d+\.\d+/);
   });
 
   it("forwards all remaining args to the engine", async () => {

@@ -97,7 +97,7 @@ async function cmdInit(flags: Flags): Promise<void> {
 
   const { writeFile } = await import("node:fs/promises");
 
-  const template = `import { defineConfig } from "@itz4blitz/ai-tools-skills";
+  const template = `import { defineConfig } from "@itz4blitz/ai-tools/skills";
 
 export default defineConfig({
   skills: [
@@ -127,7 +127,8 @@ export default defineConfig({
   console.log("  3. Run: ai-skills install   (install skills into your tools)");
 }
 
-async function cmdDetect(_flags: Flags): Promise<void> {
+async function cmdDetect(flags: Flags): Promise<void> {
+  void flags;
   console.log("Detecting AI coding tools...\n");
 
   const detected = await registry.detectAll();

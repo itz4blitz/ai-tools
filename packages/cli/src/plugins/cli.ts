@@ -23,6 +23,7 @@ OPTIONS:
   --tools     Comma-separated list of tools (e.g., --tools=cursor,codex,opencode)
   --dry-run   Show what would be installed without writing files
   --force     Include selected tools even when they are not detected locally
+  --layer     project (default) or user (MCP servers and skills)
 
 EXAMPLES:
   ai-tools plugins init
@@ -36,6 +37,7 @@ type Flags = {
   tools?: string;
   dryRun?: boolean;
   force?: boolean;
+  layer?: "project" | "user";
 };
 
 function parseFlags(args: string[]): Flags {
@@ -50,6 +52,12 @@ function parseFlags(args: string[]): Flags {
       flags.dryRun = true;
     } else if (arg === "--force") {
       flags.force = true;
+    } else if (arg.startsWith("--layer=")) {
+      const layer = arg.slice(8);
+      if (layer !== "user" && layer !== "project") {
+        throw new Error(`Invalid --layer "${layer}" (expected user or project)`);
+      }
+      flags.layer = layer;
     }
   }
 
@@ -185,6 +193,7 @@ async function cmdInstall(flags: Flags): Promise<void> {
     tools: parseTools(flags),
     force: flags.force,
     dryRun: flags.dryRun,
+    layer: flags.layer,
   });
 
   printPlan(plugin, result.plan);
@@ -212,6 +221,7 @@ async function cmdInstall(flags: Flags): Promise<void> {
     for (const failure of result.failed) {
       console.log(`- ${failure.toolName} (${failure.engine}): ${failure.error}`);
     }
+    process.exit(1);
   }
 }
 

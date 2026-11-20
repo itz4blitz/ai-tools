@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import { buildPluginInstallPlan } from "./plan.js";
 import { loadEngineRegistries } from "./runtime.js";
 import type {
@@ -15,16 +16,21 @@ function uniquePaths(paths: string[]): string[] {
   return [...new Set(paths)];
 }
 
+function normalizePathSeparators(value: string): string {
+  return value.replaceAll("\\", "/");
+}
+
 function filterPluginServers(
   servers: PluginMCPServerDefinition[],
   ctx: { layer: PluginLayer; cwd: string },
 ): PluginMCPServerDefinition[] {
+  const normalizedCwd = normalizePathSeparators(ctx.cwd);
   return servers.filter((server) => {
     const layer = server.layer ?? "project";
     if (layer !== ctx.layer) return false;
     const fragments = server.whenPathContains ?? [];
     if (fragments.length === 0) return true;
-    return fragments.some((fragment) => ctx.cwd.includes(fragment));
+    return fragments.some((fragment) => normalizedCwd.includes(normalizePathSeparators(fragment)));
   });
 }
 
@@ -33,23 +39,38 @@ async function installEngine(
   plugin: AiPluginDefinition,
   engine: PluginEngine,
   toolId: string,
+  layer: PluginLayer,
 ): Promise<string[]> {
   switch (engine) {
     case "mcp": {
       const adapter = registries.mcp.get(toolId);
       if (!adapter) throw new Error(`Missing MCP adapter for ${toolId}`);
       const servers = filterPluginServers(plugin.mcpServers ?? [], {
-        layer: "project",
+        layer,
         cwd: process.cwd(),
       });
       if (servers.length === 0) return [];
       const files = await adapter.generate(servers);
-      await adapter.install(files);
+      if (layer === "user") {
+        if (adapter.userConfigPath) {
+          for (const file of files) {
+            file.path = adapter.userConfigPath;
+          }
+        }
+        await adapter.install(files, homedir());
+      } else {
+        await adapter.install(files);
+      }
       return files.map((file) => file.path);
     }
     case "skills": {
       const adapter = registries.skills.get(toolId);
       if (!adapter) throw new Error(`Missing skills adapter for ${toolId}`);
+      if (layer === "user") {
+        const files = await adapter.generate(plugin.skills ?? [], "user");
+        await adapter.install(files, homedir());
+        return files.map((file) => file.path);
+      }
       const files = await adapter.generate(plugin.skills ?? []);
       await adapter.install(files);
       return files.map((file) => file.path);
@@ -86,6 +107,7 @@ export async function installPluginBundle(
   const plan = await buildPluginInstallPlan(plugin, options);
   const installed: InstalledPluginArtifact[] = [];
   const failed: InstallPluginResult["failed"] = [];
+  const layer: PluginLayer = options.layer ?? "project";
 
   if (options.dryRun) {
     return { plan, installed, failed };
@@ -96,7 +118,7 @@ export async function installPluginBundle(
       if (engine.status !== "ready") continue;
       try {
         const filePaths = uniquePaths(
-          await installEngine(registries, plugin, engine.engine, target.toolId),
+          await installEngine(registries, plugin, engine.engine, target.toolId, layer),
         );
         if (filePaths.length === 0) continue;
         installed.push({

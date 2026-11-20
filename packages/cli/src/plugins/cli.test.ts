@@ -135,11 +135,34 @@ describe("plugins CLI", () => {
       tools: ["codex"],
       force: undefined,
       dryRun: true,
+      layer: undefined,
     });
     expect(logs.join("\n")).toContain("[dry-run] No files were written.");
   });
 
-  it("prints installed artifacts and failures", async () => {
+  it("passes --layer=user to installPluginBundle", async () => {
+    const { run } = await import("./cli.js");
+
+    await run(["install", "--tools=codex", "--layer=user"]);
+
+    expect(installPluginBundle).toHaveBeenCalledWith(plugin, {
+      tools: ["codex"],
+      force: undefined,
+      dryRun: undefined,
+      layer: "user",
+    });
+  });
+
+  it("rejects invalid --layer values", async () => {
+    const { run } = await import("./cli.js");
+
+    await expect(run(["install", "--layer=global"])).rejects.toThrow('Invalid --layer "global"');
+  });
+
+  it("prints installed artifacts and failures and exits with code 1", async () => {
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((code?: number) => {
+      throw new Error(`process.exit(${code})`);
+    });
     installPluginBundle.mockResolvedValue({
       plan,
       installed: [
@@ -161,7 +184,8 @@ describe("plugins CLI", () => {
     });
     const { run } = await import("./cli.js");
 
-    await run(["install"]);
+    await expect(run(["install"])).rejects.toThrow("process.exit(1)");
+    exitSpy.mockRestore();
 
     const output = logs.join("\n");
     expect(output).toContain("Installed artifacts:");

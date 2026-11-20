@@ -189,7 +189,7 @@ describe("run() - init command", () => {
     expect(mockWriteFile).toHaveBeenCalledOnce();
     expect(mockWriteFile).toHaveBeenCalledWith(
       "ai-skills.config.ts",
-      expect.stringContaining("defineConfig"),
+      expect.stringContaining('import { defineConfig } from "@itz4blitz/ai-tools/skills"'),
       "utf-8",
     );
     expect(allLog()).toContain("Created ai-skills.config.ts");

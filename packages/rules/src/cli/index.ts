@@ -84,7 +84,7 @@ export async function run(args: string[]): Promise<void> {
 async function cmdInit(flags: Flags): Promise<void> {
   const { writeFile } = await import("node:fs/promises");
 
-  const template = `import { defineRulesConfig } from "@itz4blitz/ai-tools-rules";
+  const template = `import { defineRulesConfig } from "@itz4blitz/ai-tools/rules";
 
 export default defineRulesConfig({
   rules: [

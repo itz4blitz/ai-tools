@@ -252,7 +252,7 @@ describe("run() - init command", () => {
     const firstCall = mockWriteFile.mock.calls[0]!;
     const writtenContent = firstCall[1] as string;
     expect(writtenContent).toContain(
-      'import { defineConfig, hook, builtinHooks } from "@itz4blitz/ai-tools-hooks"',
+      'import { defineConfig, hook, builtinHooks } from "@itz4blitz/ai-tools/hooks"',
     );
     expect(writtenContent).toContain("builtinHooks");
     expect(writtenContent).toContain("hook(");

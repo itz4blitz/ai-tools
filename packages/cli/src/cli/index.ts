@@ -1,3 +1,8 @@
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
+const pkgJson = require("../../package.json") as { version: string };
+
 function buildHelp(cliName: string): string {
   return `
 ${cliName} - Unified CLI for ai-tools engines and portable plugin bundles
@@ -12,7 +17,7 @@ ENGINES:
   skills      Skills/prompts configuration
   agents      Agent configuration
   rules       Project rules configuration
-  plugins     Portable capability bundle planning and install
+  plugins     Portable capability bundle planning and install (alias: plugin)
   sessions    Cross-tool session reading and handoff
 
 CROSS-CUTTING COMMANDS:
@@ -27,7 +32,7 @@ CANONICAL MODE COMMANDS:
   generate    Generate canonical files from engine configs
   install     Install engine configs into detected tool directories
   status      Show installation mode and health
-  clean       Remove tool-specific directories
+  clean       Remove manifest-tracked tool targets
 
 ENGINE COMMANDS:
   Pass any command supported by the engine's CLI.
@@ -36,7 +41,8 @@ ENGINE COMMANDS:
 OPTIONS:
   --tools     Comma-separated list of tools (forwarded to engine)
   --dry-run   Show what would happen without writing files
-  --layer     user or project (MCP install/sync and skills; forwarded)
+  --layer     user or project (MCP install/sync, plugins, and skills; forwarded)
+  --version   Show CLI version (-v)
 
 EXAMPLES:
   ${cliName} mcp detect                     # Detect MCP-capable tools
@@ -50,7 +56,7 @@ EXAMPLES:
   ${cliName} generate                       # Generate canonical files
   ${cliName} install                        # Install to tool directories
   ${cliName} status                         # Check installation health
-  ${cliName} clean                          # Remove tool directories
+  ${cliName} clean                          # Remove manifest-tracked tool targets
 `;
 }
 
@@ -67,6 +73,10 @@ const ENGINES: Record<string, EngineEntry> = {
   rules: { name: "rules", pkg: "@itz4blitz/ai-tools-rules/cli" },
   plugins: { name: "plugins", pkg: "./plugins" },
   sessions: { name: "sessions", pkg: "@itz4blitz/ai-tools-sessions/cli" },
+};
+
+const ENGINE_ALIASES: Record<string, string> = {
+  plugin: "plugins",
 };
 
 const ENGINE_NAMES = Object.keys(ENGINES);
@@ -94,6 +104,11 @@ export async function run(args: string[]): Promise<void> {
     case "-h":
     case undefined:
       console.log(help);
+      return;
+
+    case "--version":
+    case "-v":
+      console.log(pkgJson.version);
       return;
 
     case "detect":
@@ -134,10 +149,11 @@ export async function run(args: string[]): Promise<void> {
       await (await loadUi()).run(args.slice(1));
       return;
 
-    default:
-      // Check if it's an engine name
-      if (command in ENGINES) {
-        const engine = ENGINES[command];
+    default: {
+      // Check if it's an engine name or alias
+      const resolvedName = ENGINE_ALIASES[command] ?? command;
+      if (resolvedName in ENGINES) {
+        const engine = ENGINES[resolvedName];
         if (engine) {
           const mod = await loadEngine(engine.pkg);
           await mod.run(args.slice(1));
@@ -149,6 +165,7 @@ export async function run(args: string[]): Promise<void> {
       console.error(`Unknown command: ${command}`);
       console.log(help);
       process.exit(1);
+    }
   }
 }
 

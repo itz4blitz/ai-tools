@@ -77,26 +77,38 @@ const SECRET_PATTERNS = [
 ];
 
 /**
- * Built-in hook: Protect gitignored files from being read.
+ * Built-in hook: Protect sensitive files from being written, edited, or deleted.
  */
-export const protectGitignored = hook("before", ["file:write"], async (ctx, next) => {
-  const path = ctx.event.path;
+export const protectGitignored = hook(
+  "before",
+  ["file:write", "file:edit", "file:delete"],
+  async (ctx, next) => {
+    const path = ctx.event.path;
 
-  // Block writes to common sensitive files
-  const sensitive = SENSITIVE_FILES.some((f) => path.endsWith(f));
-  if (sensitive) {
-    ctx.results.push({
-      blocked: true,
-      reason: `Cannot write to sensitive file: ${path}. This file should be managed manually.`,
-    });
-    return;
-  }
+    // Block modifications or deletions of common sensitive files
+    const sensitive = SENSITIVE_FILES.some((f) => path.endsWith(f));
+    if (sensitive) {
+      const action =
+        ctx.event.type === "file:delete"
+          ? "delete"
+          : ctx.event.type === "file:edit"
+            ? "edit"
+            : "write to";
+      ctx.results.push({
+        blocked: true,
+        reason: `Cannot ${action} sensitive file: ${path}. This file should be managed manually.`,
+      });
+      return;
+    }
 
-  await next();
-})
+    await next();
+  },
+)
   .id("ai-hooks:protect-sensitive-files")
   .name("Protect Sensitive Files")
-  .description("Prevents AI tools from overwriting .env, credentials, and other sensitive files.")
+  .description(
+    "Prevents AI tools from modifying or deleting .env, credentials, and other sensitive files.",
+  )
   .priority(3)
   .build();
 

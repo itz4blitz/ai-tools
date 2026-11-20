@@ -12,6 +12,7 @@ USAGE:
   ai-agents <command> [options]
 
 COMMANDS:
+  init        Create an ai-agents.config.ts in the current directory
   detect      Detect which AI tools are installed
   generate    Generate agent configs for detected/specified tools
   install     Generate and install agents into detected tools
@@ -28,6 +29,7 @@ OPTIONS:
   --force     Skip detection checks for --tools (install even if tool not found)
 
 EXAMPLES:
+  ai-agents init                            # Create config file
   ai-agents detect                          # See which AI tools support agents
   ai-agents generate                        # Generate agent configs for all detected tools
   ai-agents install --tools=claude-code     # Install agents for Claude Code only
@@ -48,6 +50,9 @@ export async function run(args: string[]): Promise<void> {
   const flags = parseFlags(args.slice(1));
 
   switch (command) {
+    case "init":
+      await cmdInit(flags);
+      break;
     case "detect":
       await cmdDetect(flags);
       break;
@@ -79,7 +84,47 @@ export async function run(args: string[]): Promise<void> {
   }
 }
 
-async function cmdDetect(_flags: Flags): Promise<void> {
+async function cmdInit(flags: Flags): Promise<void> {
+  const { existsSync } = await import("node:fs");
+  if (existsSync("ai-agents.config.ts")) {
+    console.log("Config already exists: ai-agents.config.ts");
+    return;
+  }
+
+  const { writeFile } = await import("node:fs/promises");
+
+  const template = `import { defineConfig } from "@itz4blitz/ai-tools/agents";
+
+export default defineConfig({
+  agents: [
+    // Add your agents here:
+    //
+    // {
+    //   id: "reviewer",
+    //   name: "Code Reviewer",
+    //   description: "Reviews pull requests for correctness and maintainability",
+    //   instructions: "Review code changes carefully for bugs, edge cases, and style.",
+    // },
+  ],
+});
+`;
+
+  if (flags.dryRun) {
+    console.log("[dry-run] Would create ai-agents.config.ts");
+    return;
+  }
+
+  await writeFile("ai-agents.config.ts", template, "utf-8");
+  console.log("Created ai-agents.config.ts");
+  console.log("");
+  console.log("Next steps:");
+  console.log("  1. Edit ai-agents.config.ts to add your agents");
+  console.log("  2. Run: ai-agents detect    (see which AI tools are installed)");
+  console.log("  3. Run: ai-agents install   (install agents into your tools)");
+}
+
+async function cmdDetect(flags: Flags): Promise<void> {
+  void flags;
   console.log("Detecting AI coding tools with agent support...\n");
 
   const detected = await registry.detectAll();

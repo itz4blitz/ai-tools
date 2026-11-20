@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
-import { rm } from "node:fs/promises";
-import { resolve } from "node:path";
+import { readdir, rm, stat } from "node:fs/promises";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import { writeConfig, isCanonical, getMode } from "./config.js";
 import { readManifest, writeManifest } from "./manifest.js";
 import { addManagedBlock, removeManagedBlock, hasManagedBlock } from "./gitignore.js";
@@ -10,6 +10,7 @@ type EngineModule = {
   name: string;
   pkg: string;
   configPkg: string;
+  configFiles: string[];
 };
 
 const ENGINES: EngineModule[] = [
@@ -17,22 +18,31 @@ const ENGINES: EngineModule[] = [
     name: "hooks",
     pkg: "@itz4blitz/ai-tools-hooks/cli",
     configPkg: "@itz4blitz/ai-tools-hooks",
+    configFiles: ["ai-hooks.config.ts", "ai-tools-hooks.config.ts"],
   },
-  { name: "mcp", pkg: "@itz4blitz/ai-tools-mcp/cli", configPkg: "@itz4blitz/ai-tools-mcp" },
+  {
+    name: "mcp",
+    pkg: "@itz4blitz/ai-tools-mcp/cli",
+    configPkg: "@itz4blitz/ai-tools-mcp",
+    configFiles: ["mcp.config.ts"],
+  },
   {
     name: "skills",
     pkg: "@itz4blitz/ai-tools-skills/cli",
     configPkg: "@itz4blitz/ai-tools-skills",
+    configFiles: ["ai-skills.config.ts"],
   },
   {
     name: "agents",
     pkg: "@itz4blitz/ai-tools-agents/cli",
     configPkg: "@itz4blitz/ai-tools-agents",
+    configFiles: ["ai-agents.config.ts"],
   },
   {
     name: "rules",
     pkg: "@itz4blitz/ai-tools-rules/cli",
     configPkg: "@itz4blitz/ai-tools-rules",
+    configFiles: ["ai-rules.config.ts"],
   },
 ];
 
@@ -51,17 +61,121 @@ const TOOL_TARGETS: Array<{ dir: string; adapterId: string }> = [
   { dir: ".continue", adapterId: "continue" },
   { dir: ".roo", adapterId: "roo-code" },
   { dir: ".agents", adapterId: "antigravity-cli" },
+  { dir: ".windsurf", adapterId: "windsurf" },
 ];
 
 const TOOL_DIRS = TOOL_TARGETS.map((target) => target.dir);
 
-function presentToolTargets(cwd: string): ManifestTarget[] {
-  return TOOL_TARGETS.filter((target) => existsSync(resolve(cwd, target.dir))).map((target) => ({
-    adapterId: target.adapterId,
-    targetPath: target.dir,
-    strategy: "transform" as const,
-    status: "direct" as const,
-  }));
+type FileSnapshotEntry = {
+  adapterId: string;
+  mtimeMs: number;
+  size: number;
+};
+
+type ToolSnapshot = {
+  dirs: Set<string>;
+  files: Map<string, FileSnapshotEntry>;
+};
+
+async function snapshotToolFiles(cwd: string): Promise<ToolSnapshot> {
+  const dirs = new Set<string>();
+  const files = new Map<string, FileSnapshotEntry>();
+
+  for (const target of TOOL_TARGETS) {
+    const fullDir = resolve(cwd, target.dir);
+    if (!existsSync(fullDir)) continue;
+    dirs.add(target.dir);
+
+    try {
+      const entries = await readdir(fullDir, { recursive: true, withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isFile()) continue;
+        const fullPath = resolve(entry.parentPath, entry.name);
+        const relPath = relative(cwd, fullPath).split(sep).join("/");
+        try {
+          const info = await stat(fullPath);
+          files.set(relPath, {
+            adapterId: target.adapterId,
+            mtimeMs: info.mtimeMs,
+            size: info.size,
+          });
+        } catch {
+          // Ignore transient files that disappeared during traversal
+        }
+      }
+    } catch {
+      // Ignore unreadable or non-directory targets
+    }
+  }
+
+  return { dirs, files };
+}
+
+function diffInstalledTargets(
+  before: ToolSnapshot,
+  after: ToolSnapshot,
+  existingTargets: ManifestTarget[],
+  cwd: string,
+): ManifestTarget[] {
+  const recorded = new Map<string, ManifestTarget>();
+
+  for (const target of existingTargets) {
+    if (existsSync(resolve(cwd, target.targetPath))) {
+      recorded.set(target.targetPath, target);
+    }
+  }
+
+  for (const [relPath, afterInfo] of after.files) {
+    const beforeInfo = before.files.get(relPath);
+    if (
+      !beforeInfo ||
+      beforeInfo.mtimeMs !== afterInfo.mtimeMs ||
+      beforeInfo.size !== afterInfo.size
+    ) {
+      recorded.set(relPath, {
+        adapterId: afterInfo.adapterId,
+        targetPath: relPath,
+        strategy: "transform",
+        status: "direct",
+      });
+    }
+  }
+
+  for (const target of TOOL_TARGETS) {
+    if (!before.dirs.has(target.dir) && after.dirs.has(target.dir)) {
+      const hasFileInDir = [...recorded.keys()].some(
+        (key) => key === target.dir || key.startsWith(`${target.dir}/`),
+      );
+      if (!hasFileInDir) {
+        recorded.set(target.dir, {
+          adapterId: target.adapterId,
+          targetPath: target.dir,
+          strategy: "transform",
+          status: "direct",
+        });
+      }
+    }
+  }
+
+  return [...recorded.values()];
+}
+
+function resolveCanonicalPath(cwd: string, engine: EngineModule): string {
+  const canonicalDir = `.ai-tools/${engine.name}`;
+  if (existsSync(resolve(cwd, canonicalDir))) {
+    return `${canonicalDir}/`;
+  }
+  for (const configFile of engine.configFiles) {
+    if (existsSync(resolve(cwd, configFile))) {
+      return configFile;
+    }
+  }
+  return "";
+}
+
+function isWithinCwd(cwd: string, fullPath: string): boolean {
+  const rel = relative(cwd, fullPath);
+  return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
 }
 
 function hasFlag(flags: string[], flag: string): boolean {
@@ -109,6 +223,7 @@ export async function cmdGenerate(flags: string[]): Promise<void> {
   const canonical = await isCanonical();
   if (!canonical) {
     console.error("Not in canonical mode. Run 'ai-tools init' first.");
+    process.exit(1);
     return;
   }
 
@@ -140,6 +255,7 @@ export async function cmdInstall(flags: string[]): Promise<void> {
   const canonical = await isCanonical();
   if (!canonical) {
     console.error("Not in canonical mode. Run 'ai-tools init' first.");
+    process.exit(1);
     return;
   }
 
@@ -157,24 +273,32 @@ export async function cmdInstall(flags: string[]): Promise<void> {
         console.log(`  [dry-run] ${engine.name}: would install`);
       } else {
         console.log(`  ${engine.name}: installing...`);
+        const before = await snapshotToolFiles(cwd);
         await mod.run(installArgs);
+        const after = await snapshotToolFiles(cwd);
         totalInstalled++;
 
-        const entry: ManifestEntry = {
-          engine: engine.name,
-          id: engine.name,
-          canonicalPath: `.ai-tools/${engine.name}/`,
-          targets: presentToolTargets(cwd),
-          updatedAt: new Date().toISOString(),
-        };
-
         const idx = manifest.entries.findIndex(
-          (e) => e.engine === entry.engine && e.id === entry.id,
+          (e) => e.engine === engine.name && e.id === engine.name,
         );
-        if (idx >= 0) {
-          manifest.entries[idx] = entry;
-        } else {
-          manifest.entries.push(entry);
+        const existingTargets = idx >= 0 ? (manifest.entries[idx]?.targets ?? []) : [];
+        const targets = diffInstalledTargets(before, after, existingTargets, cwd);
+
+        if (targets.length > 0) {
+          const entry: ManifestEntry = {
+            engine: engine.name,
+            id: engine.name,
+            canonicalPath: resolveCanonicalPath(cwd, engine),
+            targets,
+            updatedAt: new Date().toISOString(),
+          };
+          if (idx >= 0) {
+            manifest.entries[idx] = entry;
+          } else {
+            manifest.entries.push(entry);
+          }
+        } else if (idx >= 0) {
+          manifest.entries.splice(idx, 1);
         }
       }
     } catch (err) {
@@ -227,32 +351,50 @@ export async function cmdStatus(flags: string[]): Promise<void> {
 
 export async function cmdClean(flags: string[]): Promise<void> {
   const dryRun = hasFlag(flags, "--dry-run");
+  const force = hasFlag(flags, "--force");
+
+  const canonical = await isCanonical();
+  if (!canonical && !force) {
+    console.error(
+      "Not in canonical mode. Refusing to clean unmanaged tool directories. Run 'ai-tools init' first or pass --force.",
+    );
+    process.exit(1);
+    return;
+  }
 
   const cwd = process.cwd();
+  const manifest = await readManifest();
+  const trackedPaths = [
+    ...new Set(manifest.entries.flatMap((entry) => entry.targets.map((t) => t.targetPath))),
+  ];
 
-  console.log("Cleaning tool-specific directories...\n");
+  console.log("Cleaning manifest-tracked targets...\n");
 
   let cleaned = 0;
-  for (const dir of TOOL_DIRS) {
-    const fullPath = resolve(cwd, dir);
+  for (const targetPath of trackedPaths) {
+    const fullPath = resolve(cwd, targetPath);
+    if (!isWithinCwd(cwd, fullPath)) continue;
     if (existsSync(fullPath)) {
       if (dryRun) {
-        console.log(`  [dry-run] Would remove: ${dir}`);
+        console.log(`  [dry-run] Would remove: ${targetPath}`);
       } else {
-        await rm(fullPath, { recursive: true });
-        console.log(`  Removed: ${dir}`);
+        await rm(fullPath, { recursive: true, force: true });
+        console.log(`  Removed: ${targetPath}`);
       }
       cleaned++;
     }
   }
 
   if (!dryRun) {
+    if (manifest.entries.length > 0) {
+      await writeManifest({ version: 1, entries: [] });
+    }
     await removeManagedBlock();
   }
 
   if (cleaned === 0) {
-    console.log("  No tool directories found.");
+    console.log("  No manifest-tracked targets found.");
   } else {
-    console.log(`\nCleaned ${cleaned} director${cleaned === 1 ? "y" : "ies"}.`);
+    console.log(`\nCleaned ${cleaned} target${cleaned === 1 ? "" : "s"}.`);
   }
 }
