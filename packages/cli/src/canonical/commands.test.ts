@@ -439,4 +439,45 @@ describe("cmdClean", () => {
     expect(mockRemoveManagedBlock).not.toHaveBeenCalled();
     expect(allLog()).toContain("[dry-run] Would remove: .claude/hooks.json");
   });
+
+  it("skips unsafe manifest target paths that escape cwd", async () => {
+    mockIsCanonical.mockResolvedValue(true);
+    mockReadManifest.mockResolvedValue({
+      version: 1,
+      entries: [
+        {
+          engine: "hooks",
+          id: "hooks",
+          canonicalPath: "ai-hooks.config.ts",
+          targets: [
+            {
+              adapterId: "claude-code",
+              targetPath: "../outside",
+              strategy: "transform",
+              status: "direct",
+            },
+            {
+              adapterId: "claude-code",
+              targetPath: ".",
+              strategy: "transform",
+              status: "direct",
+            },
+            {
+              adapterId: "claude-code",
+              targetPath: "/etc/passwd",
+              strategy: "transform",
+              status: "direct",
+            },
+          ],
+          updatedAt: "2026-01-01T00:00:00Z",
+        },
+      ],
+    });
+    mockExistsSync.mockReturnValue(true);
+
+    await cmdClean([]);
+
+    expect(mockRm).not.toHaveBeenCalled();
+    expect(allLog()).toContain("No manifest-tracked targets found");
+  });
 });

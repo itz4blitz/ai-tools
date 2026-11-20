@@ -1,7 +1,4 @@
-import { createRequire } from "node:module";
-
-const require = createRequire(import.meta.url);
-const pkgJson = require("../../package.json") as { version: string };
+import pkgJson from "../../package.json" with { type: "json" };
 
 function buildHelp(cliName: string): string {
   return `

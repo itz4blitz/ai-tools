@@ -218,7 +218,8 @@ describe("executeChain", () => {
         name: "fast",
         events: ["shell:before"],
         phase: "before",
-        handler: async (_ctx, next) => {
+        handler: async (ctx, next) => {
+          void ctx;
           await next();
         },
       },

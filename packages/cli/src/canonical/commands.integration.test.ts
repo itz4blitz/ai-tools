@@ -108,4 +108,40 @@ describe("canonical commands (temp-dir integration)", () => {
     const cleared = JSON.parse(clearedRaw) as { entries: unknown[] };
     expect(cleared.entries).toEqual([]);
   });
+
+  it("tracks newly created empty tool directories, resolves .ai-tools/<engine>/, and prunes stale entries", async () => {
+    await cmdInit([]);
+    await mkdir(join(tempDir, ".ai-tools", "hooks"), { recursive: true });
+
+    // Engine creates an empty .windsurf directory
+    mockHooksRun.mockImplementationOnce(async () => {
+      await mkdir(join(tempDir, ".windsurf"), { recursive: true });
+    });
+
+    await cmdInstall([]);
+
+    const manifest1 = JSON.parse(
+      await readFile(join(tempDir, ".ai-tools", "manifest.json"), "utf-8"),
+    ) as {
+      entries: Array<{
+        engine: string;
+        canonicalPath: string;
+        targets: Array<{ adapterId: string; targetPath: string }>;
+      }>;
+    };
+    expect(manifest1.entries).toHaveLength(1);
+    expect(manifest1.entries[0]?.canonicalPath).toBe(".ai-tools/hooks/");
+    expect(manifest1.entries[0]?.targets).toEqual([
+      expect.objectContaining({ adapterId: "windsurf", targetPath: ".windsurf" }),
+    ]);
+
+    // Remove .windsurf externally and re-run install; stale entry should be pruned
+    await rm(join(tempDir, ".windsurf"), { recursive: true, force: true });
+    await cmdInstall([]);
+
+    const manifest2 = JSON.parse(
+      await readFile(join(tempDir, ".ai-tools", "manifest.json"), "utf-8"),
+    ) as { entries: unknown[] };
+    expect(manifest2.entries).toEqual([]);
+  });
 });
