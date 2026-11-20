@@ -148,11 +148,12 @@ export const KNOWN_PLUGIN_HOSTS: Record<string, PluginHostInfo> = {
   continue: {
     id: "continue",
     name: "Continue",
-    kind: "desktop",
-    nativeEngineSupport: { mcp: false, skills: true, rules: true, agents: false, hooks: false },
+    kind: "hybrid",
+    nativeEngineSupport: { mcp: true, skills: true, rules: true, agents: true, hooks: true },
     supportsInteractiveApps: false,
     supportsNativeBundles: false,
-    notes: "Continue adapters cover skills and rules only.",
+    notes:
+      "Continue IDE extension and cn CLI share .continue configs for MCP, skills, rules, agents, and hooks.",
   },
   "gemini-cli": {
     id: "gemini-cli",

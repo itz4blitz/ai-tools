@@ -4,6 +4,7 @@ import "./claude-code.js";
 import "./claude-desktop.js";
 import "./cline.js";
 import "./codex.js";
+import "./continue.js";
 import "./copilot.js";
 import "./cursor.js";
 import "./droid.js";
