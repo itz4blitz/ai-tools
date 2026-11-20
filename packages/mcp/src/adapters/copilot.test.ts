@@ -143,6 +143,21 @@ describe("CopilotMCPAdapter", () => {
       });
     });
 
+    it("handles malformed existing .vscode/mcp.json safely during install and uninstall", async () => {
+      const vscodeDir = join(tempDir, ".vscode");
+      await mkdir(vscodeDir, { recursive: true });
+      const mcpPath = join(vscodeDir, "mcp.json");
+      await writeFile(mcpPath, "{ bad json");
+
+      await adapter.uninstall(tempDir);
+      expect(existsSync(mcpPath)).toBe(true);
+
+      const files = await adapter.generate([httpServer]);
+      await adapter.install(files, tempDir);
+      const merged = JSON.parse(await readFile(mcpPath, "utf-8"));
+      expect(merged.servers["http-server"].type).toBe("http");
+    });
+
     it("imports user config via importUser()", async () => {
       const userMcpPath = join(tempDir, "user-mcp.json");
       await writeFile(
@@ -180,6 +195,16 @@ describe("CopilotMCPAdapter", () => {
 
       cmdSpy.mockImplementation(async (cmd) => cmd === "code");
       expect(await adapter.detect(tempDir)).toBe(true);
+
+      await writeFile(join(tempDir, "user-mcp.json"), "{}");
+      Object.defineProperty(adapter, "userConfigPath", {
+        value: join(tempDir, "user-mcp.json"),
+      });
+      cmdSpy.mockResolvedValue(false);
+      expect(await adapter.detect(tempDir)).toBe(true);
+
+      await adapter.uninstall(tempDir);
+      expect(await adapter.import(tempDir)).toEqual([]);
     });
 
     it("removes .vscode/mcp.json on uninstall when only servers exist", async () => {

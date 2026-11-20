@@ -117,6 +117,34 @@ describe("CopilotSkillAdapter", () => {
       expect(await adapter.import(tempDir)).toEqual([]);
     });
 
+    it("escapes special YAML characters and parses quoted/plain SKILL.md", async () => {
+      const specialFiles = await adapter.generate([
+        { id: "sec", name: "Sec", description: "Check: #1 rule", content: "Inspect." },
+      ]);
+      expect(specialFiles[0]?.content).toContain('description: "Check: #1 rule"');
+      await adapter.install(specialFiles, tempDir);
+
+      const plainDir = join(tempDir, ".github/skills/plain");
+      await mkdir(plainDir, { recursive: true });
+      await writeFile(join(plainDir, "SKILL.md"), "Just plain markdown body.");
+
+      const singleDir = join(tempDir, ".github/skills/single");
+      await mkdir(singleDir, { recursive: true });
+      await writeFile(
+        join(singleDir, "SKILL.md"),
+        "---\nname: 'Single''s Skill'\ndescription: \"Quoted\"\n---\n\nBody.\n",
+      );
+
+      const imported = await adapter.import(tempDir);
+      expect(imported.find((s) => s.id === "sec")?.description).toBe("Check: #1 rule");
+      expect(imported.find((s) => s.id === "plain")).toEqual({
+        id: "plain",
+        name: "plain",
+        content: "Just plain markdown body.",
+      });
+      expect(imported.find((s) => s.id === "single")?.name).toBe("Single's Skill");
+    });
+
     it("uninstalls skill folders and preserves unrelated files", async () => {
       const files = await adapter.generate([testSkill]);
       await adapter.install(files, tempDir);

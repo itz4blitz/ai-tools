@@ -154,7 +154,19 @@ describe("CopilotAdapter", () => {
       expect(await adapter.detect()).toBe(true);
     });
 
-    it("returns true when copilot or code CLI is on PATH", async () => {
+    it("returns true when copilot CLI is on PATH", async () => {
+      const spy = vi
+        .spyOn(
+          adapter as unknown as { commandExists: (cmd: string) => Promise<boolean> },
+          "commandExists",
+        )
+        .mockImplementation(async (cmd) => cmd === "copilot");
+
+      expect(await adapter.detect()).toBe(true);
+      expect(spy).toHaveBeenCalledWith("copilot");
+    });
+
+    it("returns true when code CLI is on PATH as fallback", async () => {
       const spy = vi
         .spyOn(
           adapter as unknown as { commandExists: (cmd: string) => Promise<boolean> },

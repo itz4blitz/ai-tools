@@ -138,6 +138,35 @@ describe("CopilotRuleAdapter", () => {
       });
     });
 
+    it("handles manual scope, special description chars, and single-quoted frontmatter", async () => {
+      const files = await adapter.generate([
+        {
+          id: "manual-rule",
+          name: "Manual Rule",
+          description: "Rule: #1 manual",
+          content: "Apply on demand.",
+          scope: { type: "manual" },
+        },
+      ]);
+      expect(files[0]?.content).toContain('description: "Rule: #1 manual"');
+      await adapter.install(files, tempDir);
+
+      await writeFile(
+        join(tempDir, ".github/instructions/single.instructions.md"),
+        "---\napplyTo: '**'\ndescription: 'It''s global'\n---\n\nAlways.\n",
+      );
+
+      const imported = await adapter.import(tempDir);
+      expect(imported.find((r) => r.id === "manual-rule")).toMatchObject({
+        scope: { type: "manual" },
+        description: "Rule: #1 manual",
+      });
+      expect(imported.find((r) => r.id === "single")).toMatchObject({
+        scope: { type: "always" },
+        description: "It's global",
+      });
+    });
+
     it("returns empty array when neither file nor dir exists", async () => {
       expect(await adapter.import(tempDir)).toEqual([]);
     });

@@ -71,6 +71,9 @@ describe("CopilotSessionAdapter", () => {
       expect(await adapter.detect()).toBe(true);
       expect(spy).toHaveBeenCalledWith("copilot");
       expect(spy).toHaveBeenCalledWith("gh");
+
+      spy.mockImplementation(async (cmd) => cmd === "copilot");
+      expect(await adapter.detect()).toBe(true);
     });
   });
 
@@ -201,6 +204,52 @@ describe("CopilotSessionAdapter", () => {
       ]);
     });
 
+    it("handles system/tool roles, string responses, filters, and malformed files", async () => {
+      const sessionDir = join(tempHome, ".copilot", "session-state", "sess-roles");
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(
+        join(sessionDir, "events.jsonl"),
+        [
+          JSON.stringify({ type: "system.message", data: { content: "System init" } }),
+          JSON.stringify({ type: "user.message", data: { text: "Run check" } }),
+          JSON.stringify({ type: "tool.result", data: { content: "ok" } }),
+          JSON.stringify({ role: "assistant", content: "Done" }),
+          JSON.stringify({ type: "unknown.event", data: { content: "ignored" } }),
+          JSON.stringify({ type: "user.message", data: { content: { structured: true } } }),
+        ].join("\n"),
+      );
+
+      const wsDir = join(resolveVsCodeWorkspaceStoragePath(), "ws-misc", "chatSessions");
+      await mkdir(wsDir, { recursive: true });
+      await writeFile(
+        join(wsDir, "turns.jsonl"),
+        [
+          JSON.stringify({ role: "human", text: "Hi from jsonl" }),
+          JSON.stringify({ role: "copilot", content: "Hello back" }),
+          JSON.stringify({ role: "system", content: "Sys" }),
+          JSON.stringify({ role: "tool", content: "Tool out" }),
+        ].join("\n"),
+      );
+      await writeFile(
+        join(wsDir, "string-resp.json"),
+        JSON.stringify({
+          creationDate: "2026-01-01T00:00:00.000Z",
+          requests: [
+            { message: "String prompt", response: "String response" },
+            { message: { text: "Obj prompt" }, response: { value: "Obj response" } },
+          ],
+        }),
+      );
+      await writeFile(join(wsDir, "notes.txt"), "skip");
+
+      const all = await adapter.parseSessions();
+      expect(all.length).toBe(3);
+      expect(all.find((s) => s.id === "copilot-sess-roles")?.messageCount).toBe(4);
+
+      const filtered = await adapter.parseSessions({ limit: 1 });
+      expect(filtered).toHaveLength(1);
+    });
+
     it("parses legacy ~/.config/github-copilot/*.json alongside new locations", async () => {
       const legacyDir = join(tempHome, ".config", "github-copilot");
       await mkdir(legacyDir, { recursive: true });
@@ -217,11 +266,19 @@ describe("CopilotSessionAdapter", () => {
         }),
       );
 
+      await writeFile(
+        join(legacyDir, "messages-only.json"),
+        JSON.stringify({
+          messages: [{ role: "user", text: "Message text" }],
+        }),
+      );
+      await writeFile(join(legacyDir, "empty.json"), JSON.stringify({}));
+      await writeFile(join(legacyDir, "notes.txt"), "ignored");
+
       const sessions = await adapter.parseSessions();
-      expect(sessions).toHaveLength(1);
-      expect(sessions[0]?.id).toBe("cp-legacy-1");
-      expect(sessions[0]?.messages).toHaveLength(2);
-      expect(sessions[0]?.messages[1]?.role).toBe("assistant");
+      expect(sessions).toHaveLength(2);
+      expect(sessions.find((s) => s.id === "cp-legacy-1")?.messages).toHaveLength(2);
+      expect(sessions.find((s) => s.id === "copilot-messages-only")?.messages).toHaveLength(1);
     });
   });
 });

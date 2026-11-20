@@ -126,6 +126,30 @@ describe("CopilotAgentAdapter", () => {
       });
     });
 
+    it("parses .agent.md without frontmatter and single-quoted YAML values", async () => {
+      const agentsDir = join(tempDir, ".github/agents");
+      await mkdir(agentsDir, { recursive: true });
+      await writeFile(join(agentsDir, "plain.agent.md"), "# Plain Agent\n\nDo plain things.\n");
+      await writeFile(
+        join(agentsDir, "single.agent.md"),
+        "---\nname: 'O''Connor'\ndescription: 'Single quoted'\nmodel: 'gpt-4'\n---\n\nAct.\n",
+      );
+
+      const imported = await adapter.import(tempDir);
+      expect(imported.find((a) => a.id === "plain")).toEqual({
+        id: "plain",
+        name: "Plain Agent",
+        instructions: "Do plain things.",
+      });
+      expect(imported.find((a) => a.id === "single")).toEqual({
+        id: "single",
+        name: "O'Connor",
+        description: "Single quoted",
+        model: "gpt-4",
+        instructions: "Act.",
+      });
+    });
+
     it("returns empty array when config dir is missing", async () => {
       expect(await adapter.import(tempDir)).toEqual([]);
     });
