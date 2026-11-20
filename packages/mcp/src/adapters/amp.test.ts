@@ -318,5 +318,17 @@ describe("AmpMCPAdapter", () => {
       await adapter.uninstall(cwd);
       expect(existsSync(fullPath)).toBe(false);
     });
+
+    it("uninstall leaves JSONC settings untouched when amp.mcpServers is absent", async () => {
+      const cwd = await scratch();
+      await mkdir(join(cwd, ".amp"), { recursive: true });
+      const original = `{\n  // User comment preserved\n  "$schema": "https://ampcode.com/schemas/settings.json"\n}\n`;
+      await writeFile(join(cwd, ".amp/settings.json"), original, "utf-8");
+
+      const adapter = new AmpMCPAdapter();
+      await adapter.uninstall(cwd);
+
+      expect(await readFile(join(cwd, ".amp/settings.json"), "utf-8")).toBe(original);
+    });
   });
 });

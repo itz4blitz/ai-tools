@@ -168,8 +168,7 @@ let engine: HookEngine | undefined;
 
 async function getEngine(): Promise<HookEngine> {
   if (!engine) {
-    process.chdir(PROJECT_ROOT);
-    const config = await loadConfig();
+    const config = await loadConfig(undefined, PROJECT_ROOT);
     engine = new HookEngine(config);
   }
   return engine;
@@ -307,54 +306,65 @@ async function handleHook(eventName: string, rawEvent: unknown) {
   const metadata: Record<string, unknown> = {};
   const payload = asRecord(rawEvent);
 
-  let hookEvent;
+  const eventsToEmit = [];
   switch (eventName) {
     case "session.start":
-      hookEvent = {
+      eventsToEmit.push({
         type: "session:start" as const,
         tool: "amp",
         version: "1.0",
         workingDirectory: PROJECT_ROOT,
         timestamp,
         metadata,
-      };
+      });
       break;
     case "agent.start":
-      hookEvent = {
+      eventsToEmit.push({
         type: "prompt:submit" as const,
         prompt: String(payload.message ?? payload.prompt ?? ""),
         timestamp,
         metadata,
-      };
+      });
       break;
     case "agent.end":
-      hookEvent = {
-        type: "prompt:response" as const,
-        response: String(payload.message ?? payload.response ?? ""),
-        model: String(payload.model ?? "unknown"),
-        tokens: { input: 0, output: 0 },
-        timestamp,
-        metadata,
-      };
+      eventsToEmit.push(
+        {
+          type: "prompt:response" as const,
+          response: String(payload.message ?? payload.response ?? ""),
+          model: String(payload.model ?? "unknown"),
+          tokens: { input: 0, output: 0 },
+          timestamp,
+          metadata,
+        },
+        {
+          type: "session:end" as const,
+          tool: "amp",
+          duration: typeof payload.duration === "number" ? payload.duration : 0,
+          timestamp,
+          metadata,
+        },
+      );
       break;
     case "tool.call":
-      hookEvent = resolveToolCall(payload, timestamp, metadata);
+      eventsToEmit.push(resolveToolCall(payload, timestamp, metadata));
       break;
     case "tool.result":
-      hookEvent = resolveToolResult(payload, timestamp, metadata);
+      eventsToEmit.push(resolveToolResult(payload, timestamp, metadata));
       break;
     default:
       return;
   }
 
-  const results = await eng.emit(hookEvent, toolInfo);
-  const blocked = results.find((r) => r.blocked);
+  for (const hookEvent of eventsToEmit) {
+    const results = await eng.emit(hookEvent, toolInfo);
+    const blocked = results.find((r) => r.blocked);
 
-  if (blocked && eventName === "tool.call") {
-    return {
-      action: "reject-and-continue" as const,
-      message: blocked.reason ?? "Blocked by ai-hooks",
-    };
+    if (blocked && eventName === "tool.call") {
+      return {
+        action: "reject-and-continue" as const,
+        message: blocked.reason ?? "Blocked by ai-hooks",
+      };
+    }
   }
 }
 

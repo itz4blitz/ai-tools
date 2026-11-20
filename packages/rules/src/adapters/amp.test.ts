@@ -96,24 +96,67 @@ describe("AmpRuleAdapter", () => {
       expect(secondPass.match(/<!-- ai-tools:rules:start -->/g)).toHaveLength(1);
     });
 
-    it("round-trips managed rules and glob scopes via install and import", async () => {
+    it("round-trips managed rules and preserves always vs glob scopes", async () => {
       const cwd = await scratch();
       const adapter = new AmpRuleAdapter();
-      await adapter.install(await adapter.generate([alwaysRule, globRule]), cwd);
+      const files = await adapter.generate([alwaysRule, globRule]);
+      // Mixed always + glob rules must not attach file-level globs frontmatter
+      expect(files[0]!.content).not.toContain("---\nglobs:");
+      await adapter.install(files, cwd);
 
       const imported = await adapter.import(cwd);
-      expect(imported).toHaveLength(2);
-      expect(imported[0]).toMatchObject({
-        id: "ts-strict",
-        name: "TypeScript Strict",
-        content: "Always enable strict type checking.",
-      });
-      expect(imported[1]).toEqual({
-        id: "react-hooks",
-        name: "React Hooks",
-        content: "Follow the rules of hooks.",
-        scope: { type: "glob", patterns: ["src/**/*.tsx", "packages/ui/**/*.ts"] },
-      });
+      expect(imported).toEqual([
+        {
+          id: "ts-strict",
+          name: "TypeScript Strict",
+          content: "Always enable strict type checking.",
+          scope: { type: "always" },
+        },
+        {
+          id: "react-hooks",
+          name: "React Hooks",
+          content: "Follow the rules of hooks.",
+          scope: { type: "glob", patterns: ["src/**/*.tsx", "packages/ui/**/*.ts"] },
+        },
+      ]);
+    });
+
+    it("updates frontmatter when re-installing purely managed glob rules", async () => {
+      const cwd = await scratch();
+      const adapter = new AmpRuleAdapter();
+      await adapter.install(await adapter.generate([globRule]), cwd);
+
+      const updatedGlobRule: RuleDefinition = {
+        id: "api-routes",
+        name: "API Routes",
+        content: "Validate inputs.",
+        scope: { type: "glob", patterns: ["api/**/*.ts"] },
+      };
+      await adapter.install(await adapter.generate([updatedGlobRule]), cwd);
+
+      const content = await readFile(join(cwd, "AGENTS.md"), "utf-8");
+      expect(content).toContain('  - "api/**/*.ts"');
+      expect(content).not.toContain("src/**/*.tsx");
+    });
+
+    it("ignores non-glob YAML list items in frontmatter", async () => {
+      const cwd = await scratch();
+      await writeFile(
+        join(cwd, "AGENTS.md"),
+        '---\ntags:\n  - "frontend"\nglobs:\n  - "src/**/*.ts"\n---\n\n# Rules\n\nFollow lint.\n',
+        "utf-8",
+      );
+
+      const adapter = new AmpRuleAdapter();
+      const imported = await adapter.import(cwd);
+      expect(imported).toEqual([
+        {
+          id: "agents",
+          name: "Rules",
+          content: "Follow lint.",
+          scope: { type: "glob", patterns: ["src/**/*.ts"] },
+        },
+      ]);
     });
 
     it("falls back to AGENT.md when AGENTS.md is absent", async () => {
@@ -157,10 +200,10 @@ describe("AmpRuleAdapter", () => {
       expect(remaining).toBe("# Manual Header\n\nKeep me.\n\n## Manual Footer\n");
     });
 
-    it("uninstall deletes AGENTS.md when it only contains the managed section", async () => {
+    it("uninstall deletes AGENTS.md when it only contains the managed section (including glob frontmatter)", async () => {
       const cwd = await scratch();
       const adapter = new AmpRuleAdapter();
-      await adapter.install(await adapter.generate([alwaysRule]), cwd);
+      await adapter.install(await adapter.generate([globRule]), cwd);
       expect(existsSync(join(cwd, "AGENTS.md"))).toBe(true);
 
       await adapter.uninstall(cwd);

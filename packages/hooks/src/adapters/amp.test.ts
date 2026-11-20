@@ -135,6 +135,9 @@ describe("AmpAdapter", () => {
       expect(plugin.content).toContain(
         `const PROJECT_ROOT = ${JSON.stringify(resolve(process.cwd()))};`,
       );
+      expect(plugin.content).toContain("loadConfig(undefined, PROJECT_ROOT)");
+      expect(plugin.content).not.toContain("process.chdir");
+      expect(plugin.content).toContain('type: "session:end"');
       expect(plugin.content).toContain('action: "reject-and-continue"');
       expect(plugin.content).toContain('amp.on("session.start"');
       expect(plugin.content).toContain('amp.on("agent.start"');

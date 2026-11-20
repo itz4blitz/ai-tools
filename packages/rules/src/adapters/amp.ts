@@ -27,26 +27,35 @@ function extractFrontmatter(raw: string): {
   const fmContent = match[1] ?? "";
   const body = match[2] ?? "";
   const globs: string[] = [];
+  let inGlobs = false;
 
   for (const line of fmContent.split("\n")) {
     const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+
     if (trimmed.startsWith("globs:")) {
       const rest = trimmed.slice(6).trim();
       if (rest.startsWith("[") && rest.endsWith("]")) {
+        inGlobs = false;
         for (const item of rest.slice(1, -1).split(",")) {
           const cleaned = item.trim().replace(/^["']|["']$/g, "");
           if (cleaned) globs.push(cleaned);
         }
       } else if (rest) {
+        inGlobs = false;
         const cleaned = rest.replace(/^["']|["']$/g, "");
         if (cleaned) globs.push(cleaned);
+      } else {
+        inGlobs = true;
       }
-    } else if (trimmed.startsWith("- ")) {
+    } else if (inGlobs && trimmed.startsWith("- ")) {
       const pattern = trimmed
         .slice(2)
         .trim()
         .replace(/^["']|["']$/g, "");
       if (pattern) globs.push(pattern);
+    } else if (/^[a-zA-Z0-9_-]+\s*:/.test(trimmed)) {
+      inGlobs = false;
     }
   }
 
@@ -81,7 +90,16 @@ function buildManagedSection(rules: RuleDefinition[]): string {
   return `${MANAGED_START}\n${blocks.join("\n\n")}\n${MANAGED_END}`;
 }
 
-function collectGlobs(rules: RuleDefinition[]): string[] {
+function collectFileGlobs(rules: RuleDefinition[]): string[] {
+  // Only attach file-level globs frontmatter when every rule is glob-scoped;
+  // otherwise an `always` rule in root AGENTS.md would be over-scoped.
+  if (
+    rules.length === 0 ||
+    !rules.every((rule) => rule.scope.type === "glob" && rule.scope.patterns.length > 0)
+  ) {
+    return [];
+  }
+
   const seen = new Set<string>();
   for (const rule of rules) {
     if (rule.scope.type === "glob") {
@@ -93,7 +111,7 @@ function collectGlobs(rules: RuleDefinition[]): string[] {
   return [...seen];
 }
 
-function parseManagedRules(section: string, fileGlobs: string[]): RuleDefinition[] {
+function parseManagedRules(section: string): RuleDefinition[] {
   const lines = normalizeNewlines(section).split("\n");
   const rules: RuleDefinition[] = [];
 
@@ -115,9 +133,8 @@ function parseManagedRules(section: string, fileGlobs: string[]): RuleDefinition
     }
 
     const content = blockLines.slice(contentStart).join("\n").trim();
-    const effectiveGlobs = currentGlobs.length > 0 ? currentGlobs : fileGlobs;
     const scope: RuleScope =
-      effectiveGlobs.length > 0 ? { type: "glob", patterns: effectiveGlobs } : { type: "always" };
+      currentGlobs.length > 0 ? { type: "glob", patterns: currentGlobs } : { type: "always" };
 
     rules.push({
       id: currentId,
@@ -169,7 +186,7 @@ export class AmpRuleAdapter extends BaseRuleAdapter {
 
   async generate(rules: RuleDefinition[]): Promise<GeneratedFile[]> {
     if (rules.length === 0) return [];
-    const globs = collectGlobs(rules);
+    const globs = collectFileGlobs(rules);
     const frontmatter = buildFrontmatter(globs);
     const managed = buildManagedSection(rules);
     return [
@@ -193,22 +210,33 @@ export class AmpRuleAdapter extends BaseRuleAdapter {
       }
 
       const existingRaw = normalizeNewlines(await readFile(fullPath, "utf-8"));
+      const existingParsed = extractFrontmatter(existingRaw);
       const generatedParsed = extractFrontmatter(file.content);
       const generatedBody = generatedParsed.body.trim();
 
-      const startIdx = existingRaw.indexOf(MANAGED_START);
-      const endIdx = existingRaw.indexOf(MANAGED_END);
+      const startIdx = existingParsed.body.indexOf(MANAGED_START);
+      const endIdx = existingParsed.body.indexOf(MANAGED_END);
 
       let merged: string;
       if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
-        const before = existingRaw.slice(0, startIdx);
-        const after = existingRaw.slice(endIdx + MANAGED_END.length);
-        merged = `${before}${generatedBody}${after}`;
+        const before = existingParsed.body.slice(0, startIdx);
+        const after = existingParsed.body.slice(endIdx + MANAGED_END.length);
+        const hasManualProse = Boolean(before.trim() || after.trim());
+
+        if (!hasManualProse) {
+          // Purely managed file: replace frontmatter + managed section together.
+          merged = file.content;
+        } else {
+          const updatedBody = `${before}${generatedBody}${after}`.replace(/^\n+/, "");
+          merged = existingParsed.frontmatter
+            ? `${existingParsed.frontmatter}\n\n${updatedBody}`
+            : updatedBody;
+        }
       } else {
-        const existingParsed = extractFrontmatter(existingRaw);
-        const frontmatter = existingParsed.frontmatter ?? generatedParsed.frontmatter;
         const userBody = existingParsed.body.trim();
         const combinedBody = userBody ? `${userBody}\n\n${generatedBody}` : generatedBody;
+        // Preserve existing frontmatter; never attach file-level globs over manual prose.
+        const frontmatter = userBody ? existingParsed.frontmatter : generatedParsed.frontmatter;
         merged = frontmatter ? `${frontmatter}\n\n${combinedBody}\n` : `${combinedBody}\n`;
       }
 
@@ -240,7 +268,7 @@ export class AmpRuleAdapter extends BaseRuleAdapter {
     const endIdx = trimmedBody.indexOf(MANAGED_END);
     if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
       const inner = trimmedBody.slice(startIdx + MANAGED_START.length, endIdx).trim();
-      const parsed = parseManagedRules(inner, globs);
+      const parsed = parseManagedRules(inner);
       if (parsed.length > 0) return parsed;
     }
 
@@ -272,22 +300,24 @@ export class AmpRuleAdapter extends BaseRuleAdapter {
     if (!existsSync(fullPath)) return;
 
     const raw = normalizeNewlines(await readFile(fullPath, "utf-8"));
-    const startIdx = raw.indexOf(MANAGED_START);
-    const endIdx = raw.indexOf(MANAGED_END);
+    const { frontmatter, body } = extractFrontmatter(raw);
+    const startIdx = body.indexOf(MANAGED_START);
+    const endIdx = body.indexOf(MANAGED_END);
     if (startIdx === -1 || endIdx === -1 || endIdx <= startIdx) {
       return;
     }
 
-    const before = raw.slice(0, startIdx).trimEnd();
-    const after = raw.slice(endIdx + MANAGED_END.length).trimStart();
-    const remaining = [before, after].filter(Boolean).join("\n\n").trim();
+    const before = body.slice(0, startIdx).trimEnd();
+    const after = body.slice(endIdx + MANAGED_END.length).trimStart();
+    const remainingBody = [before, after].filter(Boolean).join("\n\n").trim();
 
-    if (!remaining) {
+    if (!remainingBody) {
       await rm(fullPath);
       return;
     }
 
-    await writeFile(fullPath, `${remaining}\n`, "utf-8");
+    const output = frontmatter ? `${frontmatter}\n\n${remainingBody}\n` : `${remainingBody}\n`;
+    await writeFile(fullPath, output, "utf-8");
   }
 }
 

@@ -225,13 +225,13 @@ class AmpMCPAdapter extends BaseMCPAdapter {
   }
 
   override async importUser(): Promise<MCPServerDefinition[]> {
-    return this.readSettings(this.userConfigPath);
+    return this.readSettings(resolveAmpUserConfigPath());
   }
 
   override async detect(cwd?: string): Promise<boolean> {
     const dir = cwd ?? process.cwd();
     if (existsSync(resolve(dir, this.configPath))) return true;
-    if (existsSync(this.userConfigPath)) return true;
+    if (existsSync(resolveAmpUserConfigPath())) return true;
     return this.commandExists(this.command);
   }
 
@@ -263,6 +263,8 @@ class AmpMCPAdapter extends BaseMCPAdapter {
     if (!existsSync(fullPath)) return;
 
     const existing = parseJsoncObject(await readFile(fullPath, "utf-8"));
+    if (!(MCP_SERVERS_KEY in existing)) return;
+
     delete existing[MCP_SERVERS_KEY];
 
     if (Object.keys(existing).length === 0) {
