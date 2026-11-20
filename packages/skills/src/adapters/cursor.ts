@@ -2,7 +2,7 @@ import { BaseSkillAdapter } from "./base.js";
 import { registry } from "./registry.js";
 import type { SkillDefinition, GeneratedFile, SkillLayer } from "../types/index.js";
 import { existsSync } from "node:fs";
-import { readFile, readdir } from "node:fs/promises";
+import { readFile, readdir, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 
 class CursorSkillAdapter extends BaseSkillAdapter {
@@ -19,6 +19,13 @@ class CursorSkillAdapter extends BaseSkillAdapter {
   async import(cwd?: string): Promise<SkillDefinition[]> {
     return importSkillMd(this.configDir, cwd);
   }
+
+  override async uninstall(cwd?: string): Promise<void> {
+    const dir = cwd ?? process.cwd();
+    const skillsDir = resolve(dir, this.configDir);
+    if (!existsSync(skillsDir)) return;
+    await rm(skillsDir, { recursive: true, force: true });
+  }
 }
 
 function formatSkill(skill: SkillDefinition): string {
@@ -27,7 +34,7 @@ function formatSkill(skill: SkillDefinition): string {
 }
 
 function parseSkill(id: string, raw: string): SkillDefinition {
-  const match = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/.exec(raw.trim());
+  const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n([\s\S]*))?$/.exec(raw.trim());
   if (!match) {
     return { id, name: id, content: raw.trim() };
   }
@@ -35,7 +42,7 @@ function parseSkill(id: string, raw: string): SkillDefinition {
   const body = (match[2] ?? "").trim();
   let name = id;
   let description: string | undefined;
-  for (const line of frontmatter.split("\n")) {
+  for (const line of frontmatter.split(/\r?\n/)) {
     const colon = line.indexOf(":");
     if (colon === -1) continue;
     const key = line.slice(0, colon).trim();

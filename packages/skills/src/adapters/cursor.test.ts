@@ -78,8 +78,8 @@ describe("CursorSkillAdapter", () => {
     });
   });
 
-  describe("install", () => {
-    it("writes SKILL.md into a temp project, not prompts/", async () => {
+  describe("install & uninstall", () => {
+    it("writes SKILL.md into a temp project and uninstall removes .cursor/skills", async () => {
       await withTempDir(async (dir) => {
         const files = await adapter.generate([testSkill]);
         await adapter.install(files, dir);
@@ -90,6 +90,15 @@ describe("CursorSkillAdapter", () => {
         const written = await readFile(skillPath, "utf-8");
         expect(written).toContain("name: review");
         expect(written).toContain("Security issues");
+
+        await adapter.uninstall(dir);
+        expect(existsSync(join(dir, ".cursor/skills"))).toBe(false);
+      });
+    });
+
+    it("uninstall is a no-op when .cursor/skills is missing", async () => {
+      await withTempDir(async (dir) => {
+        await expect(adapter.uninstall(dir)).resolves.toBeUndefined();
       });
     });
   });
@@ -101,24 +110,35 @@ describe("CursorSkillAdapter", () => {
       });
     });
 
-    it("imports SKILL.md directories Cursor actually loads", async () => {
+    it("imports SKILL.md directories with LF and CRLF frontmatter", async () => {
       await withTempDir(async (dir) => {
-        const skillDir = join(dir, ".cursor/skills/review");
-        await mkdir(skillDir, { recursive: true });
+        const lfDir = join(dir, ".cursor/skills/review");
+        const crlfDir = join(dir, ".cursor/skills/crlf-skill");
+        await mkdir(lfDir, { recursive: true });
+        await mkdir(crlfDir, { recursive: true });
         await writeFile(
-          join(skillDir, "SKILL.md"),
+          join(lfDir, "SKILL.md"),
           "---\nname: review\ndescription: Review the code\n---\n\nReview the code\n",
+        );
+        await writeFile(
+          join(crlfDir, "SKILL.md"),
+          "---\r\nname: crlf-skill\r\ndescription: Windows CRLF skill\r\n---\r\n\r\nCRLF body\r\n",
         );
 
         const result = await adapter.import(dir);
-        expect(result).toEqual([
-          {
-            id: "review",
-            name: "review",
-            description: "Review the code",
-            content: "Review the code",
-          },
-        ]);
+        const byId = new Map(result.map((s) => [s.id, s]));
+        expect(byId.get("review")).toEqual({
+          id: "review",
+          name: "review",
+          description: "Review the code",
+          content: "Review the code",
+        });
+        expect(byId.get("crlf-skill")).toEqual({
+          id: "crlf-skill",
+          name: "crlf-skill",
+          description: "Windows CRLF skill",
+          content: "CRLF body",
+        });
       });
     });
 
