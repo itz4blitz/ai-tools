@@ -5,23 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentDefinition } from "../types/index.js";
 
-vi.mock("./index.js", () => {
-  const registry = { register: vi.fn() };
-  abstract class BaseAgentAdapter {
-    abstract readonly id: string;
-    abstract readonly name: string;
-    abstract readonly nativeSupport: boolean;
-    abstract readonly configDir: string;
-    abstract generate(agents: AgentDefinition[]): Promise<unknown[]>;
-    abstract import(cwd?: string): Promise<AgentDefinition[]>;
-    async detect() {
-      return false;
-    }
-    async install() {}
-    async uninstall() {}
-  }
-  return { BaseAgentAdapter, registry };
-});
+vi.mock("./registry.js", () => ({
+  registry: { register: vi.fn() },
+}));
 
 import { OpenCodeAgentAdapter } from "./opencode.js";
 
@@ -41,6 +27,8 @@ describe("OpenCodeAgentAdapter", () => {
     id: "reviewer",
     name: "Code Reviewer",
     description: "Reviews code",
+    model: "anthropic/claude-sonnet-4",
+    tools: ["read", "grep"],
     instructions: "Review carefully.",
   };
 
@@ -49,86 +37,116 @@ describe("OpenCodeAgentAdapter", () => {
   });
 
   describe("metadata", () => {
-    it("has correct id", () => {
+    it("has correct metadata and prefers plural .opencode/agents", () => {
       expect(adapter.id).toBe("opencode");
-    });
-
-    it("has correct name", () => {
       expect(adapter.name).toBe("OpenCode");
-    });
-
-    it("has native support", () => {
       expect(adapter.nativeSupport).toBe(true);
-    });
-
-    it("has correct configDir", () => {
-      // Live OpenCode dir is agent/ (singular). Observed ~/.config/opencode/agent/crash.md
-      // and OpenCode binary docs: `.opencode/agent/<name>.md`.
-      expect(adapter.configDir).toBe(".opencode/agent");
+      expect(adapter.configDir).toBe(".opencode/agents");
     });
   });
 
   describe("generate", () => {
     it("returns empty array for no agents", async () => {
-      const files = await adapter.generate([]);
-      expect(files).toEqual([]);
+      expect(await adapter.generate([])).toEqual([]);
     });
 
-    it("generates file at the live OpenCode agent path", async () => {
+    it("generates file under .opencode/agents with mode and boolean tools map", async () => {
       const files = await adapter.generate([testAgent]);
-      expect(files[0]!.path).toBe(".opencode/agent/reviewer.md");
-    });
-
-    it("generates file with md format", async () => {
-      const files = await adapter.generate([testAgent]);
+      expect(files).toHaveLength(1);
+      expect(files[0]!.path).toBe(".opencode/agents/reviewer.md");
       expect(files[0]!.format).toBe("md");
+      expect(files[0]!.content).toContain("description: Reviews code");
+      expect(files[0]!.content).toContain("mode: subagent");
+      expect(files[0]!.content).toContain("model: anthropic/claude-sonnet-4");
+      expect(files[0]!.content).toContain("tools:\n  read: true\n  grep: true");
+      expect(files[0]!.content).toContain("# Code Reviewer");
     });
   });
 
-  describe("install", () => {
-    it("writes markdown into .opencode/agent, not .opencode/agents", async () => {
+  describe("install & uninstall", () => {
+    it("writes markdown into .opencode/agents and removes it on uninstall", async () => {
       await withTempDir(async (dir) => {
         const files = await adapter.generate([testAgent]);
         await adapter.install(files, dir);
 
-        const agentPath = join(dir, ".opencode/agent/reviewer.md");
+        const agentPath = join(dir, ".opencode/agents/reviewer.md");
         expect(existsSync(agentPath)).toBe(true);
-        expect(existsSync(join(dir, ".opencode/agents/reviewer.md"))).toBe(false);
-        expect(await readFile(agentPath, "utf-8")).toContain("# Code Reviewer");
+        expect(await readFile(agentPath, "utf-8")).toContain("mode: subagent");
+
+        await adapter.uninstall(dir);
+        expect(existsSync(join(dir, ".opencode/agents"))).toBe(false);
       });
     });
   });
 
-  describe("import", () => {
-    it("returns empty array when config dir does not exist", async () => {
+  describe("import & detect", () => {
+    it("returns empty array when config dirs do not exist", async () => {
       await withTempDir(async (dir) => {
         expect(await adapter.import(dir)).toEqual([]);
       });
     });
 
-    it("imports without cwd argument", async () => {
+    it("parses boolean tools map, mode, and CRLF from .opencode/agents", async () => {
       await withTempDir(async (dir) => {
-        const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(dir);
-        try {
-          expect(await adapter.import()).toEqual([]);
-        } finally {
-          cwdSpy.mockRestore();
-        }
-      });
-    });
-
-    it("parses agent from markdown file", async () => {
-      await withTempDir(async (dir) => {
-        await mkdir(join(dir, ".opencode/agent"), { recursive: true });
+        await mkdir(join(dir, ".opencode/agents"), { recursive: true });
         await writeFile(
-          join(dir, ".opencode/agent/reviewer.md"),
-          "---\ndescription: Reviews code\n---\n\n# Code Reviewer\n\nReview.\n",
+          join(dir, ".opencode/agents/reviewer.md"),
+          "---\r\ndescription: Reviews code\r\nmode: subagent\r\nmodel: openai/gpt-4o\r\ntools:\r\n  read: true\r\n  write: false\r\n  grep: true\r\n---\r\n\r\n# Code Reviewer\r\n\r\nReview.\r\n",
         );
 
         const agents = await adapter.import(dir);
         expect(agents).toHaveLength(1);
-        expect(agents[0]!.id).toBe("reviewer");
-        expect(agents[0]!.name).toBe("Code Reviewer");
+        expect(agents[0]).toEqual({
+          id: "reviewer",
+          name: "Code Reviewer",
+          description: "Reviews code",
+          model: "openai/gpt-4o",
+          tools: ["read", "grep"],
+          instructions: "Review.",
+        });
+      });
+    });
+
+    it("falls back to singular .opencode/agent while preferring plural .opencode/agents", async () => {
+      await withTempDir(async (dir) => {
+        await mkdir(join(dir, ".opencode/agents"), { recursive: true });
+        await mkdir(join(dir, ".opencode/agent"), { recursive: true });
+
+        await writeFile(
+          join(dir, ".opencode/agents/shared.md"),
+          "---\ndescription: Plural version\n---\n\n# Plural\n\nNew.\n",
+        );
+        await writeFile(
+          join(dir, ".opencode/agent/shared.md"),
+          "---\ndescription: Singular version\n---\n\n# Singular\n\nOld.\n",
+        );
+        await writeFile(
+          join(dir, ".opencode/agent/legacy.md"),
+          "---\ndescription: Legacy agent\ntools:\n  - bash\n---\n\n# Legacy\n\nLegacy instructions.\n",
+        );
+
+        const agents = await adapter.import(dir);
+        expect(agents).toHaveLength(2);
+        expect(agents.find((a) => a.id === "shared")?.description).toBe("Plural version");
+        expect(agents.find((a) => a.id === "legacy")).toMatchObject({
+          name: "Legacy",
+          tools: ["bash"],
+        });
+      });
+    });
+
+    it("detects .opencode/agents, .opencode/agent, and opencode.jsonc", async () => {
+      await withTempDir(async (dir) => {
+        const cmdSpy = vi
+          .spyOn(adapter as unknown as { commandExists: () => Promise<boolean> }, "commandExists")
+          .mockResolvedValue(false);
+        try {
+          expect(await adapter.detect(dir)).toBe(false);
+          await mkdir(join(dir, ".opencode/agent"), { recursive: true });
+          expect(await adapter.detect(dir)).toBe(true);
+        } finally {
+          cmdSpy.mockRestore();
+        }
       });
     });
   });

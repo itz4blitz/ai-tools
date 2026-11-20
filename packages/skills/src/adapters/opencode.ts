@@ -2,7 +2,8 @@ import { BaseSkillAdapter } from "./base.js";
 import { registry } from "./registry.js";
 import type { SkillDefinition, GeneratedFile, SkillLayer } from "../types/index.js";
 import { existsSync } from "node:fs";
-import { readFile, readdir } from "node:fs/promises";
+import { readFile, readdir, rm } from "node:fs/promises";
+import { homedir } from "node:os";
 import { resolve } from "node:path";
 
 class OpenCodeSkillAdapter extends BaseSkillAdapter {
@@ -13,12 +14,37 @@ class OpenCodeSkillAdapter extends BaseSkillAdapter {
   readonly userConfigDir = ".config/opencode/skills";
   readonly command = "opencode";
 
+  override async detect(cwd?: string, layer: SkillLayer = "project"): Promise<boolean> {
+    const baseDir = layer === "user" ? (cwd ?? homedir()) : (cwd ?? process.cwd());
+    const skillsPath = resolve(baseDir, this.skillsDir(layer));
+    if (existsSync(skillsPath)) return true;
+    if (layer === "project") {
+      if (
+        existsSync(resolve(baseDir, "opencode.json")) ||
+        existsSync(resolve(baseDir, "opencode.jsonc"))
+      ) {
+        return true;
+      }
+      if (this.command) return this.commandExists(this.command);
+    }
+    return false;
+  }
+
   async generate(skills: SkillDefinition[], layer?: SkillLayer): Promise<GeneratedFile[]> {
     return this.skillFolders(skills, this.skillsDir(layer), formatSkill);
   }
 
-  async import(cwd?: string): Promise<SkillDefinition[]> {
-    return importSkillMd(this.configDir, cwd);
+  override async import(cwd?: string, layer: SkillLayer = "project"): Promise<SkillDefinition[]> {
+    const baseDir = layer === "user" ? (cwd ?? homedir()) : (cwd ?? process.cwd());
+    return importSkillMd(this.skillsDir(layer), baseDir);
+  }
+
+  override async uninstall(cwd?: string, layer: SkillLayer = "project"): Promise<void> {
+    const baseDir = layer === "user" ? (cwd ?? homedir()) : (cwd ?? process.cwd());
+    const skillsPath = resolve(baseDir, this.skillsDir(layer));
+    if (existsSync(skillsPath)) {
+      await rm(skillsPath, { recursive: true, force: true });
+    }
   }
 }
 
@@ -28,7 +54,7 @@ function formatSkill(skill: SkillDefinition): string {
 }
 
 function parseSkill(id: string, raw: string): SkillDefinition {
-  const match = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/.exec(raw.trim());
+  const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n([\s\S]*))?$/.exec(raw.trim());
   if (!match) {
     return { id, name: id, content: raw.trim() };
   }
@@ -36,7 +62,7 @@ function parseSkill(id: string, raw: string): SkillDefinition {
   const body = (match[2] ?? "").trim();
   let name = id;
   let description: string | undefined;
-  for (const line of frontmatter.split("\n")) {
+  for (const line of frontmatter.split(/\r?\n/)) {
     const colon = line.indexOf(":");
     if (colon === -1) continue;
     const key = line.slice(0, colon).trim();
@@ -47,9 +73,8 @@ function parseSkill(id: string, raw: string): SkillDefinition {
   return { id, name, description, content: body };
 }
 
-async function importSkillMd(configDir: string, cwd?: string): Promise<SkillDefinition[]> {
-  const dir = cwd ?? process.cwd();
-  const skillsDir = resolve(dir, configDir);
+async function importSkillMd(configDir: string, baseDir: string): Promise<SkillDefinition[]> {
+  const skillsDir = resolve(baseDir, configDir);
   if (!existsSync(skillsDir)) return [];
 
   const entries = await readdir(skillsDir, { withFileTypes: true });

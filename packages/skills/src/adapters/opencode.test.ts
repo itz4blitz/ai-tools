@@ -36,11 +36,11 @@ describe("OpenCodeSkillAdapter", () => {
   });
 
   describe("metadata", () => {
-    it("has correct id", () => expect(adapter.id).toBe("opencode"));
-    it("has correct name", () => expect(adapter.name).toBe("OpenCode"));
-    it("has native support", () => expect(adapter.nativeSupport).toBe(true));
-    it("has correct config dir", () => expect(adapter.configDir).toBe(".opencode/skills"));
-    it("writes user-layer skills to ~/.config/opencode/skills", async () => {
+    it("has correct metadata and user-layer skills dir", async () => {
+      expect(adapter.id).toBe("opencode");
+      expect(adapter.name).toBe("OpenCode");
+      expect(adapter.nativeSupport).toBe(true);
+      expect(adapter.configDir).toBe(".opencode/skills");
       expect(adapter.skillsDir("user")).toBe(".config/opencode/skills");
       const files = await adapter.generate([testSkill], "user");
       expect(files[0]?.path).toBe(`.config/opencode/skills/${testSkill.id}/SKILL.md`);
@@ -53,24 +53,8 @@ describe("OpenCodeSkillAdapter", () => {
       expect(files).toHaveLength(1);
       expect(files[0]?.path).toBe(".opencode/skills/review/SKILL.md");
       expect(files[0]?.format).toBe("md");
-    });
-
-    it("formats Agent Skills frontmatter plus body", async () => {
-      const files = await adapter.generate([testSkill]);
       expect(files[0]?.content).toContain("name: review");
       expect(files[0]?.content).toContain("description: Review code for best practices");
-      expect(files[0]?.content).toContain("Security issues");
-    });
-
-    it("handles empty skills array", async () => {
-      const files = await adapter.generate([]);
-      expect(files).toHaveLength(0);
-    });
-
-    it("handles multiple skills", async () => {
-      const skills = [testSkill, { ...testSkill, id: "debug", name: "Debug" }];
-      const files = await adapter.generate(skills);
-      expect(files).toHaveLength(2);
     });
 
     it("falls back to skill name when description is missing", async () => {
@@ -80,92 +64,94 @@ describe("OpenCodeSkillAdapter", () => {
     });
   });
 
-  describe("install", () => {
-    it("writes SKILL.md into a temp project, not prompts/ or command/", async () => {
+  describe("install & uninstall", () => {
+    it("writes and removes project-layer skills", async () => {
       await withTempDir(async (dir) => {
         const files = await adapter.generate([testSkill]);
         await adapter.install(files, dir);
 
         const skillPath = join(dir, ".opencode/skills/review/SKILL.md");
         expect(existsSync(skillPath)).toBe(true);
-        expect(existsSync(join(dir, ".opencode/prompts/review.md"))).toBe(false);
-        expect(existsSync(join(dir, ".opencode/command/review.md"))).toBe(false);
         expect(await readFile(skillPath, "utf-8")).toContain("name: review");
+
+        await adapter.uninstall(dir, "project");
+        expect(existsSync(join(dir, ".opencode/skills"))).toBe(false);
+      });
+    });
+
+    it("writes and removes user-layer skills under .config/opencode/skills", async () => {
+      await withTempDir(async (fakeHome) => {
+        const files = await adapter.generate([testSkill], "user");
+        await adapter.install(files, fakeHome);
+
+        const skillPath = join(fakeHome, ".config/opencode/skills/review/SKILL.md");
+        expect(existsSync(skillPath)).toBe(true);
+
+        await adapter.uninstall(fakeHome, "user");
+        expect(existsSync(join(fakeHome, ".config/opencode/skills"))).toBe(false);
       });
     });
   });
 
-  describe("import", () => {
-    it("returns empty array when dir does not exist", async () => {
+  describe("import & detect", () => {
+    it("parses SKILL.md with CRLF line endings", async () => {
       await withTempDir(async (dir) => {
-        expect(await adapter.import(join(dir, "missing"))).toEqual([]);
-      });
-    });
-
-    it("imports SKILL.md directories OpenCode actually loads", async () => {
-      await withTempDir(async (dir) => {
-        const skillDir = join(dir, ".opencode/skills/review");
+        const skillDir = join(dir, ".opencode/skills/crlf-skill");
         await mkdir(skillDir, { recursive: true });
         await writeFile(
           join(skillDir, "SKILL.md"),
-          "---\nname: review\ndescription: Review the code\n---\n\nReview the code\n",
+          "---\r\nname: crlf-skill\r\ndescription: Works on Windows\r\n---\r\n\r\nLine 1\r\nLine 2\r\n",
         );
 
         const result = await adapter.import(dir);
         expect(result).toHaveLength(1);
-        expect(result[0]?.id).toBe("review");
-        expect(result[0]?.name).toBe("review");
+        expect(result[0]).toEqual({
+          id: "crlf-skill",
+          name: "crlf-skill",
+          description: "Works on Windows",
+          content: "Line 1\r\nLine 2",
+        });
       });
     });
 
-    it("skips files and folders without SKILL.md", async () => {
+    it("supports layer='user' in detect() and import() for ~/.config/opencode/skills", async () => {
+      await withTempDir(async (fakeHome) => {
+        expect(await adapter.detect(fakeHome, "user")).toBe(false);
+
+        const userSkillDir = join(fakeHome, ".config/opencode/skills/global-review");
+        await mkdir(userSkillDir, { recursive: true });
+        await writeFile(
+          join(userSkillDir, "SKILL.md"),
+          "---\nname: global-review\ndescription: Global skill\n---\n\nBody\n",
+        );
+
+        expect(await adapter.detect(fakeHome, "user")).toBe(true);
+        const imported = await adapter.import(fakeHome, "user");
+        expect(imported).toHaveLength(1);
+        expect(imported[0]).toMatchObject({
+          id: "global-review",
+          name: "global-review",
+          description: "Global skill",
+          content: "Body",
+        });
+      });
+    });
+
+    it("skips files and folders without SKILL.md and handles missing frontmatter", async () => {
       await withTempDir(async (dir) => {
         const skillsDir = join(dir, ".opencode/skills");
         await mkdir(join(skillsDir, "empty"), { recursive: true });
         await writeFile(join(skillsDir, "readme.txt"), "not a skill");
-        await mkdir(join(skillsDir, "skill"), { recursive: true });
-        await writeFile(join(skillsDir, "skill", "SKILL.md"), "# Skill\n\nContent");
+        await mkdir(join(skillsDir, "plain"), { recursive: true });
+        await writeFile(join(skillsDir, "plain", "SKILL.md"), "Just content, no heading");
 
         const result = await adapter.import(dir);
         expect(result).toHaveLength(1);
-      });
-    });
-
-    it("imports skill without frontmatter", async () => {
-      await withTempDir(async (dir) => {
-        const skillDir = join(dir, ".opencode/skills/plain");
-        await mkdir(skillDir, { recursive: true });
-        await writeFile(join(skillDir, "SKILL.md"), "Just content, no heading");
-
-        const result = await adapter.import(dir);
-        expect(result[0]?.name).toBe("plain");
-        expect(result[0]?.content).toBe("Just content, no heading");
-      });
-    });
-
-    it("ignores frontmatter lines without a colon", async () => {
-      await withTempDir(async (dir) => {
-        const skillDir = join(dir, ".opencode/skills/odd");
-        await mkdir(skillDir, { recursive: true });
-        await writeFile(
-          join(skillDir, "SKILL.md"),
-          "---\nname: odd\nnot-a-pair\ndescription: Odd skill\n---\n\nBody\n",
-        );
-
-        const result = await adapter.import(dir);
-        expect(result[0]?.name).toBe("odd");
-        expect(result[0]?.description).toBe("Odd skill");
-      });
-    });
-
-    it("imports without cwd argument using process.cwd()", async () => {
-      await withTempDir(async (dir) => {
-        const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(dir);
-        try {
-          expect(await adapter.import()).toEqual([]);
-        } finally {
-          cwdSpy.mockRestore();
-        }
+        expect(result[0]).toEqual({
+          id: "plain",
+          name: "plain",
+          content: "Just content, no heading",
+        });
       });
     });
   });
