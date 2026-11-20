@@ -92,11 +92,11 @@ export const KNOWN_PLUGIN_HOSTS: Record<string, PluginHostInfo> = {
     id: "windsurf",
     name: "Windsurf",
     kind: "desktop",
-    nativeEngineSupport: { mcp: true, skills: true, rules: true, agents: false, hooks: false },
+    nativeEngineSupport: { mcp: true, skills: true, rules: true, agents: true, hooks: true },
     supportsInteractiveApps: false,
     supportsNativeBundles: false,
     notes:
-      "Windsurf can consume MCP, prompts, and rules, but ai-tools does not yet model a richer native bundle surface.",
+      "Windsurf supports user-global MCP (~/.codeium/windsurf/mcp_config.json), project/user skills (.windsurf/skills and ~/.codeium/windsurf/skills), YAML-frontmatter rules (.windsurf/rules), agents (.windsurf/agents), and Cascade hooks (.windsurf/hooks.json).",
   },
   copilot: {
     id: "copilot",

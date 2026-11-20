@@ -1,23 +1,20 @@
 import { BaseSkillAdapter } from "./base.js";
 import { registry } from "./registry.js";
-import type { SkillDefinition, GeneratedFile } from "../types/index.js";
+import type { GeneratedFile, SkillDefinition, SkillLayer } from "../types/index.js";
 import { existsSync } from "node:fs";
-import { readFile, readdir } from "node:fs/promises";
-import { resolve, basename } from "node:path";
+import { readFile, readdir, rm } from "node:fs/promises";
+import { resolve } from "node:path";
 
 class WindsurfSkillAdapter extends BaseSkillAdapter {
   readonly id = "windsurf";
   readonly name = "Windsurf";
   readonly nativeSupport = true;
   readonly configDir = ".windsurf/skills";
-  readonly command = "windsurf";
+  override readonly userConfigDir = ".codeium/windsurf/skills";
+  override readonly command = "windsurf";
 
-  async generate(skills: SkillDefinition[]): Promise<GeneratedFile[]> {
-    return skills.map((skill) => ({
-      path: `${this.configDir}/${skill.id}.md`,
-      content: this.formatSkill(skill),
-      format: "md" as const,
-    }));
+  async generate(skills: SkillDefinition[], layer?: SkillLayer): Promise<GeneratedFile[]> {
+    return this.skillFolders(skills, this.skillsDir(layer), formatSkill);
   }
 
   async import(cwd?: string): Promise<SkillDefinition[]> {
@@ -25,40 +22,71 @@ class WindsurfSkillAdapter extends BaseSkillAdapter {
     const skillsDir = resolve(dir, this.configDir);
     if (!existsSync(skillsDir)) return [];
 
-    const files = await readdir(skillsDir);
+    const entries = await readdir(skillsDir, { withFileTypes: true });
     const skills: SkillDefinition[] = [];
 
-    for (const file of files) {
-      if (!file.endsWith(".md")) continue;
-      const content = await readFile(resolve(skillsDir, file), "utf-8");
-      const id = basename(file, ".md");
-      skills.push(this.parseSkill(id, content));
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const skillPath = resolve(skillsDir, entry.name, "SKILL.md");
+      if (!existsSync(skillPath)) continue;
+      const raw = await readFile(skillPath, "utf-8");
+      skills.push(parseSkill(entry.name, raw));
     }
 
     return skills;
   }
 
-  private formatSkill(skill: SkillDefinition): string {
-    let md = `# ${skill.name}\n\n`;
-    if (skill.description) md += `${skill.description}\n\n`;
-    md += skill.content + "\n";
-    return md;
-  }
+  override async uninstall(cwd?: string): Promise<void> {
+    const dir = cwd ?? process.cwd();
+    const skillsDir = resolve(dir, this.configDir);
+    if (!existsSync(skillsDir)) return;
 
-  private parseSkill(id: string, raw: string): SkillDefinition {
-    const lines = raw.trim().split("\n");
-    let name = id;
-    let contentStart = 0;
-
-    if (lines[0]?.startsWith("# ")) {
-      name = lines[0].slice(2).trim();
-      contentStart = 1;
-      if (lines[contentStart]?.trim() === "") contentStart++;
+    const entries = await readdir(skillsDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const entryDir = resolve(skillsDir, entry.name);
+      if (existsSync(resolve(entryDir, "SKILL.md"))) {
+        await rm(entryDir, { recursive: true, force: true });
+      }
     }
 
-    const content = lines.slice(contentStart).join("\n").trim();
-    return { id, name, content };
+    const remaining = await readdir(skillsDir);
+    if (remaining.length === 0) {
+      await rm(skillsDir, { recursive: true, force: true });
+    }
   }
+}
+
+function formatSkill(skill: SkillDefinition): string {
+  const description = skill.description ?? skill.name;
+  return `---\nname: ${skill.id}\ndescription: ${description}\n---\n\n${skill.content}\n`;
+}
+
+function parseSkill(id: string, raw: string): SkillDefinition {
+  const normalized = raw.replace(/\r\n/g, "\n").trim();
+  const match = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/.exec(normalized);
+  if (!match) {
+    return { id, name: id, content: normalized };
+  }
+
+  const frontmatter = match[1] ?? "";
+  const body = (match[2] ?? "").trim();
+  let name = id;
+  let description: string | undefined;
+
+  for (const line of frontmatter.split("\n")) {
+    const colon = line.indexOf(":");
+    if (colon === -1) continue;
+    const key = line.slice(0, colon).trim();
+    const value = line
+      .slice(colon + 1)
+      .trim()
+      .replace(/^["']|["']$/g, "");
+    if (key === "name" && value) name = value;
+    if (key === "description" && value) description = value;
+  }
+
+  return { id, name, description, content: body };
 }
 
 const adapter = new WindsurfSkillAdapter();

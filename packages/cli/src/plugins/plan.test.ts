@@ -2,27 +2,27 @@ import { describe, expect, it, vi } from "vitest";
 
 const mockRegistries = {
   mcp: {
-    list: () => ["cursor", "codex", "claude-desktop", "opencode", "claude-code"],
+    list: () => ["cursor", "codex", "claude-desktop", "opencode", "claude-code", "windsurf"],
     get: () => undefined,
     detectAll: async () => [{ id: "cursor" }, { id: "codex" }, { id: "claude-desktop" }],
   },
   skills: {
-    list: () => ["cursor", "codex", "opencode", "claude-code"],
+    list: () => ["cursor", "codex", "opencode", "claude-code", "windsurf"],
     get: () => undefined,
     detectAll: async () => [{ id: "cursor" }, { id: "codex" }],
   },
   rules: {
-    list: () => ["cursor", "codex", "opencode", "claude-code"],
+    list: () => ["cursor", "codex", "opencode", "claude-code", "windsurf"],
     get: () => undefined,
     detectAll: async () => [{ id: "cursor" }, { id: "codex" }],
   },
   agents: {
-    list: () => ["cursor", "codex", "opencode", "claude-code"],
+    list: () => ["cursor", "codex", "opencode", "claude-code", "windsurf"],
     get: () => undefined,
     detectAll: async () => [{ id: "cursor" }, { id: "codex" }],
   },
   hooks: {
-    list: () => ["cursor", "codex", "opencode", "claude-code"],
+    list: () => ["cursor", "codex", "opencode", "claude-code", "windsurf"],
     get: () => undefined,
     detectAll: async () => [{ id: "cursor" }, { id: "codex" }],
   },
@@ -206,5 +206,42 @@ describe("buildPluginInstallPlan", () => {
     expect(plan.targets[0]?.engines.find((item) => item.engine === "mcp")?.status).toBe(
       "host-unsupported",
     );
+  });
+
+  it("marks Windsurf hooks and agents as ready once adapters exist", async () => {
+    const plan = await buildPluginInstallPlan(
+      {
+        id: "cert-coach",
+        name: "Certification Coach",
+        version: "0.1.0",
+        agents: [
+          {
+            id: "reviewer",
+            name: "Reviewer",
+            instructions: "Review correctness and missing tests.",
+          },
+        ],
+        hooks: [
+          {
+            id: "audit",
+            name: "Audit",
+            events: ["prompt:submit"],
+            phase: "before",
+            handler: async () => {},
+          },
+        ],
+      },
+      {
+        tools: ["windsurf"],
+        force: true,
+        detectedToolsOverride: ["windsurf"],
+      },
+    );
+
+    const target = plan.targets[0];
+    expect(target?.host.nativeEngineSupport.agents).toBe(true);
+    expect(target?.host.nativeEngineSupport.hooks).toBe(true);
+    expect(target?.engines.find((item) => item.engine === "agents")?.status).toBe("ready");
+    expect(target?.engines.find((item) => item.engine === "hooks")?.status).toBe("ready");
   });
 });
