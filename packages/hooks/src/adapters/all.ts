@@ -2,6 +2,7 @@
 import "./claude-code.js";
 import "./codex.js";
 import "./cline.js";
+import "./copilot.js";
 import "./cursor.js";
 import "./droid.js";
 import "./gemini-cli.js";

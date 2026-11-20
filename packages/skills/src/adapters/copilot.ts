@@ -1,22 +1,20 @@
 import { BaseSkillAdapter } from "./base.js";
 import { registry } from "./registry.js";
-import type { SkillDefinition, GeneratedFile } from "../types/index.js";
+import type { SkillDefinition, GeneratedFile, SkillLayer } from "../types/index.js";
 import { existsSync } from "node:fs";
-import { readFile, readdir } from "node:fs/promises";
-import { resolve, basename } from "node:path";
+import { readFile, readdir, rm } from "node:fs/promises";
+import { resolve } from "node:path";
 
 class CopilotSkillAdapter extends BaseSkillAdapter {
   readonly id = "copilot";
   readonly name = "Copilot";
   readonly nativeSupport = true;
   readonly configDir = ".github/skills";
+  override readonly userConfigDir = ".copilot/skills";
+  override readonly command = "copilot";
 
-  async generate(skills: SkillDefinition[]): Promise<GeneratedFile[]> {
-    return skills.map((skill) => ({
-      path: `${this.configDir}/${skill.id}.md`,
-      content: this.formatSkill(skill),
-      format: "md" as const,
-    }));
+  async generate(skills: SkillDefinition[], layer?: SkillLayer): Promise<GeneratedFile[]> {
+    return this.skillFolders(skills, this.skillsDir(layer), formatSkill);
   }
 
   async import(cwd?: string): Promise<SkillDefinition[]> {
@@ -24,40 +22,90 @@ class CopilotSkillAdapter extends BaseSkillAdapter {
     const skillsDir = resolve(dir, this.configDir);
     if (!existsSync(skillsDir)) return [];
 
-    const files = await readdir(skillsDir);
+    const entries = await readdir(skillsDir, { withFileTypes: true });
     const skills: SkillDefinition[] = [];
 
-    for (const file of files) {
-      if (!file.endsWith(".md")) continue;
-      const content = await readFile(resolve(skillsDir, file), "utf-8");
-      const id = basename(file, ".md");
-      skills.push(this.parseSkill(id, content));
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const skillPath = resolve(skillsDir, entry.name, "SKILL.md");
+      if (!existsSync(skillPath)) continue;
+      const content = await readFile(skillPath, "utf-8");
+      skills.push(parseSkill(entry.name, content));
     }
 
     return skills;
   }
 
-  private formatSkill(skill: SkillDefinition): string {
-    let md = `# ${skill.name}\n\n`;
-    if (skill.description) md += `${skill.description}\n\n`;
-    md += skill.content + "\n";
-    return md;
-  }
+  override async uninstall(cwd?: string): Promise<void> {
+    const dir = cwd ?? process.cwd();
+    const skillsDir = resolve(dir, this.configDir);
+    if (!existsSync(skillsDir)) return;
 
-  private parseSkill(id: string, raw: string): SkillDefinition {
-    const lines = raw.trim().split("\n");
-    let name = id;
-    let contentStart = 0;
-
-    if (lines[0]?.startsWith("# ")) {
-      name = lines[0].slice(2).trim();
-      contentStart = 1;
-      if (lines[contentStart]?.trim() === "") contentStart++;
+    const entries = await readdir(skillsDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const folderPath = resolve(skillsDir, entry.name);
+      if (existsSync(resolve(folderPath, "SKILL.md"))) {
+        await rm(folderPath, { recursive: true, force: true });
+      }
     }
 
-    const content = lines.slice(contentStart).join("\n").trim();
-    return { id, name, content };
+    const remaining = await readdir(skillsDir);
+    if (remaining.length === 0) {
+      await rm(skillsDir, { recursive: true, force: true });
+    }
   }
+}
+
+function formatSkill(skill: SkillDefinition): string {
+  const description = skill.description ?? skill.name;
+  return `---\nname: ${formatYamlScalar(skill.id)}\ndescription: ${formatYamlScalar(description)}\n---\n\n${skill.content}\n`;
+}
+
+function formatYamlScalar(value: string): string {
+  if (/[:#"'`\r\n]|^\s|\s$|^[*&![\]{}>|?-]/.test(value)) {
+    return JSON.stringify(value);
+  }
+  return value;
+}
+
+function parseSkill(id: string, raw: string): SkillDefinition {
+  const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)([\s\S]*)$/.exec(raw.trim());
+  if (!match) {
+    return { id, name: id, content: raw.trim() };
+  }
+
+  const frontmatter = match[1] ?? "";
+  const body = (match[2] ?? "").trim();
+  let name = id;
+  let description: string | undefined;
+
+  for (const line of frontmatter.split(/\r?\n/)) {
+    const colon = line.indexOf(":");
+    if (colon === -1) continue;
+    const key = line.slice(0, colon).trim();
+    const value = stripQuotes(line.slice(colon + 1).trim());
+    if (key === "name" && value) name = value;
+    if (key === "description" && value) description = value;
+  }
+
+  return { id, name, description, content: body };
+}
+
+function stripQuotes(value: string): string {
+  if (value.length < 2) return value;
+  if (value.startsWith('"') && value.endsWith('"')) {
+    try {
+      const parsed = JSON.parse(value);
+      return typeof parsed === "string" ? parsed : value.slice(1, -1);
+    } catch {
+      return value.slice(1, -1);
+    }
+  }
+  if (value.startsWith("'") && value.endsWith("'")) {
+    return value.slice(1, -1).replace(/''/g, "'");
+  }
+  return value;
 }
 
 const adapter = new CopilotSkillAdapter();

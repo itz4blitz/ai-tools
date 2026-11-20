@@ -15,7 +15,7 @@ const ADAPTER_SUPPORT: Record<string, Record<PluginEngine, boolean>> = {
   zcode: { mcp: true, skills: true, rules: true, agents: true, hooks: true },
   "antigravity-cli": { mcp: false, skills: true, rules: true, agents: true, hooks: false },
   windsurf: { mcp: true, skills: true, rules: true, agents: false, hooks: false },
-  copilot: { mcp: true, skills: true, rules: true, agents: true, hooks: false },
+  copilot: { mcp: true, skills: true, rules: true, agents: true, hooks: true },
   kiro: { mcp: true, skills: true, rules: true, agents: true, hooks: true },
   cline: { mcp: true, skills: true, rules: true, agents: true, hooks: true },
   droid: { mcp: true, skills: true, rules: true, agents: true, hooks: true },
@@ -47,6 +47,11 @@ describe("KNOWN_PLUGIN_HOSTS", () => {
 
   it("claims zcode hooks because packages/hooks registers a zcode adapter", () => {
     expect(KNOWN_PLUGIN_HOSTS.zcode?.nativeEngineSupport.hooks).toBe(true);
+  });
+
+  it("models copilot as hybrid with full native engine support including hooks", () => {
+    expect(KNOWN_PLUGIN_HOSTS.copilot?.kind).toBe("hybrid");
+    expect(KNOWN_PLUGIN_HOSTS.copilot?.nativeEngineSupport.hooks).toBe(true);
   });
 
   it("fills every PluginEngine key on each host", () => {
