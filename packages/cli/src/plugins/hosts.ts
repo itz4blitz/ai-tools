@@ -134,7 +134,7 @@ export const KNOWN_PLUGIN_HOSTS: Record<string, PluginHostInfo> = {
     supportsInteractiveApps: false,
     supportsNativeBundles: false,
     notes:
-      "Factory Droid adapters write .factory configs for hooks, MCP, agents, skills, and rules.",
+      "Factory Droid adapters write .factory/droids, .factory/skills, .factory/mcp.json (and ~/.factory/mcp.json), .factory/settings.json hooks, and AGENTS.md rules.",
   },
   amp: {
     id: "amp",

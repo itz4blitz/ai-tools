@@ -1,37 +1,30 @@
+import { existsSync } from "node:fs";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { BaseMCPAdapter } from "./base.js";
 import { registry } from "./registry.js";
-import type { MCPServerDefinition, GeneratedFile } from "../types/index.js";
-import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import type { GeneratedFile, MCPServerDefinition } from "../types/index.js";
+import {
+  encodeMcpServersFile,
+  fromMcpServersMap,
+  mergeMcpServersJson,
+  type McpServersMap,
+} from "./mcp-servers-json.js";
 
 class DroidMCPAdapter extends BaseMCPAdapter {
   readonly id = "droid";
-  readonly name = "Droid";
+  readonly name = "Factory Droid";
   readonly nativeSupport = true;
   readonly configPath = ".factory/mcp.json";
-  readonly command = "droid";
+  override readonly userConfigPath = join(homedir(), ".factory", "mcp.json");
+  override readonly command = "droid";
 
   async generate(servers: MCPServerDefinition[]): Promise<GeneratedFile[]> {
-    const mcpServers: Record<string, unknown> = {};
-    for (const server of servers) {
-      if (server.transport.type === "stdio") {
-        mcpServers[server.id] = {
-          command: server.transport.command,
-          args: server.transport.args ?? [],
-          env: server.transport.env ?? {},
-        };
-      } else {
-        mcpServers[server.id] = {
-          url: server.transport.url,
-          headers: server.transport.headers ?? {},
-        };
-      }
-    }
     return [
       {
         path: this.configPath,
-        content: JSON.stringify({ mcpServers }, null, 2) + "\n",
+        content: encodeMcpServersFile(servers),
         format: "json",
       },
     ];
@@ -39,36 +32,86 @@ class DroidMCPAdapter extends BaseMCPAdapter {
 
   async import(cwd?: string): Promise<MCPServerDefinition[]> {
     const dir = cwd ?? process.cwd();
-    const fullPath = resolve(dir, this.configPath);
-    if (!existsSync(fullPath)) return [];
-    const raw = await readFile(fullPath, "utf-8");
-    const data = JSON.parse(raw) as { mcpServers?: Record<string, Record<string, unknown>> };
-    const servers: MCPServerDefinition[] = [];
-    for (const [id, config] of Object.entries(data.mcpServers ?? {})) {
-      if (config.command) {
-        servers.push({
-          id,
-          name: id,
-          transport: {
-            type: "stdio",
-            command: config.command as string,
-            args: config.args as string[] | undefined,
-            env: config.env as Record<string, string> | undefined,
-          },
-        });
-      } else if (config.url) {
-        servers.push({
-          id,
-          name: id,
-          transport: {
-            type: "sse",
-            url: config.url as string,
-            headers: config.headers as Record<string, string> | undefined,
-          },
-        });
+    return this.readMcpServers(resolve(dir, this.configPath));
+  }
+
+  override async importUser(): Promise<MCPServerDefinition[]> {
+    return this.readMcpServers(this.userConfigPath);
+  }
+
+  override async install(files: GeneratedFile[], cwd?: string): Promise<void> {
+    const dir = cwd ?? process.cwd();
+    for (const file of files) {
+      const fullPath = isAbsolute(file.path) ? file.path : resolve(dir, file.path);
+      await mkdir(dirname(fullPath), { recursive: true });
+      let content = file.content;
+      if (existsSync(fullPath)) {
+        try {
+          content = mergeMcpServersJson(await readFile(fullPath, "utf-8"), file.content);
+        } catch {
+          content = file.content;
+        }
       }
+      await writeFile(fullPath, content, "utf-8");
     }
-    return servers;
+  }
+
+  override async uninstall(cwd?: string, serverIds?: string[]): Promise<void> {
+    const dir = cwd ?? process.cwd();
+    const fullPath = resolve(dir, this.configPath);
+    if (!existsSync(fullPath)) return;
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await readFile(fullPath, "utf-8"));
+    } catch {
+      return;
+    }
+
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
+    const data = parsed as Record<string, unknown>;
+    const otherKeys = Object.keys(data).filter((key) => key !== "mcpServers");
+
+    if (serverIds && serverIds.length > 0) {
+      const current =
+        data.mcpServers && typeof data.mcpServers === "object" && !Array.isArray(data.mcpServers)
+          ? { ...(data.mcpServers as McpServersMap) }
+          : {};
+      for (const id of serverIds) {
+        delete current[id];
+      }
+      if (Object.keys(current).length === 0 && otherKeys.length === 0) {
+        await rm(fullPath);
+        return;
+      }
+      if (Object.keys(current).length > 0) {
+        data.mcpServers = current;
+      } else {
+        delete data.mcpServers;
+      }
+      await writeFile(fullPath, `${JSON.stringify(data, null, 2)}\n`, "utf-8");
+      return;
+    }
+
+    if (otherKeys.length > 0) {
+      delete data.mcpServers;
+      await writeFile(fullPath, `${JSON.stringify(data, null, 2)}\n`, "utf-8");
+      return;
+    }
+
+    await rm(fullPath);
+  }
+
+  private async readMcpServers(fullPath: string): Promise<MCPServerDefinition[]> {
+    if (!existsSync(fullPath)) return [];
+    try {
+      const data = JSON.parse(await readFile(fullPath, "utf-8")) as {
+        mcpServers?: McpServersMap;
+      };
+      return fromMcpServersMap(data.mcpServers ?? {});
+    } catch {
+      return [];
+    }
   }
 }
 
