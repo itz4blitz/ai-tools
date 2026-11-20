@@ -4,7 +4,7 @@ import type { MCPServerDefinition, GeneratedFile } from "../types/index.js";
 import { homedir } from "node:os";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { mergeMcpServersJson } from "./mcp-servers-json.js";
 
 class GeminiCliMCPAdapter extends BaseMCPAdapter {
@@ -12,7 +12,7 @@ class GeminiCliMCPAdapter extends BaseMCPAdapter {
   readonly name = "Gemini CLI";
   readonly nativeSupport = true;
   readonly configPath = ".gemini/settings.json";
-  readonly userConfigPath = `${homedir()}/.gemini/settings.json`;
+  readonly userConfigPath = join(homedir(), ".gemini", "settings.json");
   readonly command = "gemini";
 
   async generate(servers: MCPServerDefinition[]): Promise<GeneratedFile[]> {
@@ -30,7 +30,9 @@ class GeminiCliMCPAdapter extends BaseMCPAdapter {
         // Gemini CLI reads `url` as SSE and `httpUrl` as streamable HTTP.
         mcpServers[server.id] = {
           [server.transport.type === "http" ? "httpUrl" : "url"]: server.transport.url,
-          headers: server.transport.headers ?? {},
+          ...(server.transport.headers && Object.keys(server.transport.headers).length > 0
+            ? { headers: server.transport.headers }
+            : {}),
         };
       }
     }
@@ -51,10 +53,35 @@ class GeminiCliMCPAdapter extends BaseMCPAdapter {
       await mkdir(dirname(fullPath), { recursive: true });
       let content = file.content;
       if (existsSync(fullPath)) {
-        content = mergeMcpServersJson(await readFile(fullPath, "utf-8"), file.content);
+        try {
+          content = mergeMcpServersJson(await readFile(fullPath, "utf-8"), file.content);
+        } catch {
+          content = file.content;
+        }
       }
       await writeFile(fullPath, content, "utf-8");
     }
+  }
+
+  /** Strip only `mcpServers` from settings.json without deleting auth, theme, or hooks. */
+  override async uninstall(cwd?: string): Promise<void> {
+    const dir = cwd ?? process.cwd();
+    const fullPath = resolve(dir, this.configPath);
+    if (!existsSync(fullPath)) return;
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await readFile(fullPath, "utf-8"));
+    } catch {
+      return;
+    }
+
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
+    const settings = { ...(parsed as Record<string, unknown>) };
+    if (!("mcpServers" in settings)) return;
+
+    delete settings.mcpServers;
+    await writeFile(fullPath, `${JSON.stringify(settings, null, 2)}\n`, "utf-8");
   }
 
   async import(cwd?: string): Promise<MCPServerDefinition[]> {
@@ -68,38 +95,47 @@ class GeminiCliMCPAdapter extends BaseMCPAdapter {
 
   private async readMcpServers(fullPath: string): Promise<MCPServerDefinition[]> {
     if (!existsSync(fullPath)) return [];
-    const raw = await readFile(fullPath, "utf-8");
-    const data = JSON.parse(raw) as { mcpServers?: Record<string, Record<string, unknown>> };
+    let data: { mcpServers?: Record<string, Record<string, unknown>> };
+    try {
+      const raw = await readFile(fullPath, "utf-8");
+      const parsed: unknown = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
+      data = parsed as { mcpServers?: Record<string, Record<string, unknown>> };
+    } catch {
+      return [];
+    }
+
     const servers: MCPServerDefinition[] = [];
     for (const [id, config] of Object.entries(data.mcpServers ?? {})) {
-      if (config.command) {
+      if (!config || typeof config !== "object") continue;
+      if (typeof config.command === "string") {
         servers.push({
           id,
           name: id,
           transport: {
             type: "stdio",
-            command: config.command as string,
+            command: config.command,
             args: config.args as string[] | undefined,
             env: config.env as Record<string, string> | undefined,
           },
         });
-      } else if (config.httpUrl) {
+      } else if (typeof config.httpUrl === "string") {
         servers.push({
           id,
           name: id,
           transport: {
             type: "http",
-            url: config.httpUrl as string,
+            url: config.httpUrl,
             headers: config.headers as Record<string, string> | undefined,
           },
         });
-      } else if (config.url) {
+      } else if (typeof config.url === "string") {
         servers.push({
           id,
           name: id,
           transport: {
             type: "sse",
-            url: config.url as string,
+            url: config.url,
             headers: config.headers as Record<string, string> | undefined,
           },
         });

@@ -1,110 +1,102 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import type { AgentDefinition } from "../types/index.js";
-
-vi.mock("./index.js", () => {
-  const registry = { register: vi.fn() };
-  abstract class BaseAgentAdapter {
-    abstract readonly id: string;
-    abstract readonly name: string;
-    abstract readonly nativeSupport: boolean;
-    abstract readonly configDir: string;
-    abstract generate(agents: AgentDefinition[]): Promise<unknown[]>;
-    abstract import(cwd?: string): Promise<AgentDefinition[]>;
-    async detect() {
-      return false;
-    }
-    async install() {}
-    async uninstall() {}
-  }
-  return { BaseAgentAdapter, registry };
-});
-
-vi.mock("node:fs", () => ({
-  existsSync: vi.fn(() => false),
-}));
-
-vi.mock("node:fs/promises", () => ({
-  readFile: vi.fn(),
-  readdir: vi.fn(),
-}));
-
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { existsSync } from "node:fs";
-import { readFile, readdir } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { AgentDefinition } from "../types/index.js";
 import { GeminiCliAgentAdapter } from "./gemini-cli.js";
 
 describe("GeminiCliAgentAdapter", () => {
   let adapter: GeminiCliAgentAdapter;
+  let tempDir: string;
 
   const testAgent: AgentDefinition = {
     id: "reviewer",
     name: "Code Reviewer",
-    description: "Reviews code",
+    description: "Reviews code for bugs and security issues",
+    tools: ["read_file", "grep_search"],
+    model: "gemini-2.5-pro",
     instructions: "Review carefully.",
   };
 
-  beforeEach(() => {
-    vi.clearAllMocks();
+  beforeEach(async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "ai-tools-gemini-agents-"));
     adapter = new GeminiCliAgentAdapter();
   });
 
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
   describe("metadata", () => {
-    it("has correct id", () => {
+    it("has correct metadata", () => {
       expect(adapter.id).toBe("gemini-cli");
-    });
-
-    it("has correct name", () => {
       expect(adapter.name).toBe("Gemini CLI");
-    });
-
-    it("has native support", () => {
       expect(adapter.nativeSupport).toBe(true);
-    });
-
-    it("has correct configDir", () => {
       expect(adapter.configDir).toBe(".gemini/agents");
     });
   });
 
   describe("generate", () => {
     it("returns empty array for no agents", async () => {
-      const files = await adapter.generate([]);
-      expect(files).toEqual([]);
+      expect(await adapter.generate([])).toEqual([]);
     });
 
-    it("generates file at correct path", async () => {
+    it("emits required name and description in YAML frontmatter", async () => {
       const files = await adapter.generate([testAgent]);
-      expect(files[0]!.path).toBe(".gemini/agents/reviewer.md");
+      expect(files).toHaveLength(1);
+      expect(files[0]?.path).toBe(".gemini/agents/reviewer.md");
+      expect(files[0]?.format).toBe("md");
+      expect(files[0]?.content).toContain(
+        "---\nname: reviewer\ndescription: Reviews code for bugs and security issues\n",
+      );
+      expect(files[0]?.content).toContain("tools:\n  - read_file\n  - grep_search\n");
+      expect(files[0]?.content).toContain("model: gemini-2.5-pro\n");
+      expect(files[0]?.content).toContain("# Code Reviewer\n\nReview carefully.\n");
     });
 
-    it("generates file with md format", async () => {
-      const files = await adapter.generate([testAgent]);
-      expect(files[0]!.format).toBe("md");
+    it("falls back to agent.name for required description when omitted", async () => {
+      const files = await adapter.generate([
+        { id: "helper", name: "Helper Agent", instructions: "Help the user." },
+      ]);
+      expect(files[0]?.content).toContain("name: helper\ndescription: Helper Agent\n");
     });
   });
 
-  describe("import", () => {
+  describe("import & uninstall", () => {
     it("returns empty array when config dir does not exist", async () => {
-      vi.mocked(existsSync).mockReturnValue(false);
-      const agents = await adapter.import("/project");
-      expect(agents).toEqual([]);
+      expect(await adapter.import(tempDir)).toEqual([]);
     });
 
-    it("imports without cwd argument", async () => {
-      vi.mocked(existsSync).mockReturnValue(false);
-      const agents = await adapter.import();
-      expect(agents).toEqual([]);
-    });
-
-    it("parses agent from markdown file", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir).mockResolvedValue(["reviewer.md"] as unknown as never);
-      vi.mocked(readFile).mockResolvedValue(
-        "---\ndescription: Reviews code\n---\n\n# Code Reviewer\n\nReview.\n",
+    it("round-trips agent files and handles CRLF", async () => {
+      const agentsDir = join(tempDir, ".gemini", "agents");
+      await mkdir(agentsDir, { recursive: true });
+      const files = await adapter.generate([testAgent]);
+      await writeFile(
+        join(agentsDir, "reviewer.md"),
+        files[0]!.content.replace(/\n/g, "\r\n"),
+        "utf-8",
       );
 
-      const agents = await adapter.import("/project");
-      expect(agents).toHaveLength(1);
-      expect(agents[0]!.id).toBe("reviewer");
+      const imported = await adapter.import(tempDir);
+      expect(imported).toHaveLength(1);
+      expect(imported[0]).toEqual({
+        id: "reviewer",
+        name: "Code Reviewer",
+        description: "Reviews code for bugs and security issues",
+        tools: ["read_file", "grep_search"],
+        model: "gemini-2.5-pro",
+        instructions: "Review carefully.",
+      });
+    });
+
+    it("removes .gemini/agents on uninstall", async () => {
+      const files = await adapter.generate([testAgent]);
+      await adapter.install(files, tempDir);
+      expect(existsSync(join(tempDir, ".gemini", "agents", "reviewer.md"))).toBe(true);
+
+      await adapter.uninstall(tempDir);
+      expect(existsSync(join(tempDir, ".gemini", "agents"))).toBe(false);
     });
   });
 });
