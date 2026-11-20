@@ -109,8 +109,8 @@ describe("CursorRuleAdapter", () => {
     });
   });
 
-  describe("install", () => {
-    it("writes flat .mdc files, not nested RULE.md", async () => {
+  describe("install & uninstall", () => {
+    it("writes flat .mdc files and uninstall removes .cursor/rules", async () => {
       await withTempDir(async (dir) => {
         const files = await adapter.generate([testRule, alwaysRule]);
         await adapter.install(files, dir);
@@ -120,6 +120,15 @@ describe("CursorRuleAdapter", () => {
         expect(existsSync(join(dir, ".cursor/rules/general.mdc"))).toBe(true);
         expect(existsSync(join(dir, ".cursor/rules/typescript/RULE.md"))).toBe(false);
         expect(await readFile(mdcPath, "utf-8")).toContain("alwaysApply: false");
+
+        await adapter.uninstall(dir);
+        expect(existsSync(join(dir, ".cursor/rules"))).toBe(false);
+      });
+    });
+
+    it("uninstall is a no-op when .cursor/rules does not exist", async () => {
+      await withTempDir(async (dir) => {
+        await expect(adapter.uninstall(dir)).resolves.toBeUndefined();
       });
     });
   });
@@ -131,7 +140,7 @@ describe("CursorRuleAdapter", () => {
       });
     });
 
-    it("imports rules from flat .mdc files", async () => {
+    it("imports rules from flat .mdc files with YAML list globs", async () => {
       await withTempDir(async (dir) => {
         await mkdir(join(dir, ".cursor/rules"), { recursive: true });
         await writeFile(
@@ -144,34 +153,87 @@ describe("CursorRuleAdapter", () => {
         expect(result[0]?.id).toBe("typescript");
         expect(result[0]?.description).toBe("TS rules");
         expect(result[0]?.scope).toEqual({ type: "glob", patterns: ["*.ts"] });
+        expect(result[0]?.content).toBe("Use strict TS.");
       });
     });
 
-    it("parses alwaysApply true as always scope", async () => {
+    it("parses CRLF line endings and single-line, comma-separated, and inline array globs", async () => {
+      await withTempDir(async (dir) => {
+        await mkdir(join(dir, ".cursor/rules"), { recursive: true });
+        await writeFile(
+          join(dir, ".cursor/rules/single.mdc"),
+          "---\r\ndescription: Single glob\r\nglobs: src/**/*.ts\r\nalwaysApply: false\r\n---\r\n\r\nSingle body.\r\n",
+        );
+        await writeFile(
+          join(dir, ".cursor/rules/comma.mdc"),
+          "---\r\ndescription: Comma globs\r\nglobs: *.ts, *.tsx\r\nalwaysApply: false\r\n---\r\n\r\nComma body.\r\n",
+        );
+        await writeFile(
+          join(dir, ".cursor/rules/inline-array.mdc"),
+          '---\r\ndescription: Array globs\r\nglobs: ["*.ts", "src/**/*.tsx"]\r\nalwaysApply: false\r\n---\r\n\r\nArray body.\r\n',
+        );
+
+        const result = await adapter.import(dir);
+        const byId = new Map(result.map((r) => [r.id, r]));
+
+        expect(byId.get("single")?.scope).toEqual({ type: "glob", patterns: ["src/**/*.ts"] });
+        expect(byId.get("single")?.content).toBe("Single body.");
+        expect(byId.get("comma")?.scope).toEqual({ type: "glob", patterns: ["*.ts", "*.tsx"] });
+        expect(byId.get("comma")?.content).toBe("Comma body.");
+        expect(byId.get("inline-array")?.scope).toEqual({
+          type: "glob",
+          patterns: ["*.ts", "src/**/*.tsx"],
+        });
+        expect(byId.get("inline-array")?.content).toBe("Array body.");
+      });
+    });
+
+    it("scans .cursor/rules/**/*.mdc recursively", async () => {
+      await withTempDir(async (dir) => {
+        await mkdir(join(dir, ".cursor/rules/frontend/react"), { recursive: true });
+        await writeFile(
+          join(dir, ".cursor/rules/frontend/react/hooks.mdc"),
+          "---\ndescription: React hooks\nalwaysApply: true\n---\n\nFollow rules of hooks.\n",
+        );
+
+        const result = await adapter.import(dir);
+        expect(result).toHaveLength(1);
+        expect(result[0]?.id).toBe("frontend/react/hooks");
+        expect(result[0]?.description).toBe("React hooks");
+        expect(result[0]?.scope).toEqual({ type: "always" });
+        expect(result[0]?.content).toBe("Follow rules of hooks.");
+      });
+    });
+
+    it("preserves body content when frontmatter is absent", async () => {
+      await withTempDir(async (dir) => {
+        await mkdir(join(dir, ".cursor/rules"), { recursive: true });
+        await writeFile(join(dir, ".cursor/rules/plain.mdc"), "Just plain content.\r\nLine two.");
+
+        const result = await adapter.import(dir);
+        expect(result).toHaveLength(1);
+        expect(result[0]?.id).toBe("plain");
+        expect(result[0]?.content).toBe("Just plain content.\nLine two.");
+        expect(result[0]?.scope).toEqual({ type: "always" });
+      });
+    });
+
+    it("parses alwaysApply true as always scope and false without globs as manual scope", async () => {
       await withTempDir(async (dir) => {
         await mkdir(join(dir, ".cursor/rules"), { recursive: true });
         await writeFile(
           join(dir, ".cursor/rules/general.mdc"),
           "---\ndescription: General\nalwaysApply: true\n---\n\nBe concise.",
         );
-
-        const result = await adapter.import(dir);
-        expect(result).toHaveLength(1);
-        expect(result[0]?.scope).toEqual({ type: "always" });
-      });
-    });
-
-    it("parses alwaysApply false without globs as manual scope", async () => {
-      await withTempDir(async (dir) => {
-        await mkdir(join(dir, ".cursor/rules"), { recursive: true });
         await writeFile(
           join(dir, ".cursor/rules/manual.mdc"),
           "---\ndescription: Manual\nalwaysApply: false\n---\n\nManual rule.",
         );
 
         const result = await adapter.import(dir);
-        expect(result).toHaveLength(1);
-        expect(result[0]?.scope).toEqual({ type: "manual" });
+        const byId = new Map(result.map((r) => [r.id, r]));
+        expect(byId.get("general")?.scope).toEqual({ type: "always" });
+        expect(byId.get("manual")?.scope).toEqual({ type: "manual" });
       });
     });
 
@@ -183,30 +245,6 @@ describe("CursorRuleAdapter", () => {
         } finally {
           cwdSpy.mockRestore();
         }
-      });
-    });
-
-    it("imports rule without frontmatter", async () => {
-      await withTempDir(async (dir) => {
-        await mkdir(join(dir, ".cursor/rules"), { recursive: true });
-        await writeFile(join(dir, ".cursor/rules/plain.mdc"), "Just plain content.");
-
-        const result = await adapter.import(dir);
-        expect(result).toHaveLength(1);
-        expect(result[0]?.id).toBe("plain");
-        expect(result[0]?.content).toBe("");
-        expect(result[0]?.scope).toEqual({ type: "always" });
-      });
-    });
-
-    it("ignores unclosed frontmatter", async () => {
-      await withTempDir(async (dir) => {
-        await mkdir(join(dir, ".cursor/rules"), { recursive: true });
-        await writeFile(join(dir, ".cursor/rules/broken.mdc"), "---\ndescription: no closer\n");
-
-        const result = await adapter.import(dir);
-        expect(result[0]?.id).toBe("broken");
-        expect(result[0]?.content).toBe("");
       });
     });
 

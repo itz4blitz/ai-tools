@@ -2,8 +2,56 @@ import { BaseRuleAdapter } from "./base.js";
 import { registry } from "./registry.js";
 import type { RuleDefinition, GeneratedFile } from "../types/index.js";
 import { existsSync } from "node:fs";
-import { readFile, readdir } from "node:fs/promises";
-import { basename, resolve } from "node:path";
+import { readFile, readdir, rm } from "node:fs/promises";
+import { join, relative, resolve, sep } from "node:path";
+
+function unquote(value: string): string {
+  const trimmed = value.trim();
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+function parseInlineGlobs(rawValue: string): string[] {
+  const trimmed = rawValue.trim();
+  if (!trimmed) return [];
+
+  // Inline YAML array: ["*.ts", "*.tsx"] or ['*.ts']
+  if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+    const inner = trimmed.slice(1, -1).trim();
+    if (!inner) return [];
+    return inner
+      .split(",")
+      .map((item) => unquote(item))
+      .filter((item) => item.length > 0);
+  }
+
+  // Comma-separated or single glob: "*.ts, *.tsx" or "src/**/*.ts"
+  return trimmed
+    .split(",")
+    .map((item) => unquote(item))
+    .filter((item) => item.length > 0);
+}
+
+async function collectMdcFiles(currentDir: string): Promise<string[]> {
+  const entries = await readdir(currentDir, { withFileTypes: true });
+  const files: string[] = [];
+
+  for (const entry of entries) {
+    const fullPath = join(currentDir, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...(await collectMdcFiles(fullPath)));
+    } else if (entry.isFile() && entry.name.endsWith(".mdc")) {
+      files.push(fullPath);
+    }
+  }
+
+  return files;
+}
 
 export class CursorRuleAdapter extends BaseRuleAdapter {
   readonly id = "cursor";
@@ -25,16 +73,24 @@ export class CursorRuleAdapter extends BaseRuleAdapter {
     const rulesDir = resolve(dir, this.configDir);
     if (!existsSync(rulesDir)) return [];
 
-    const entries = await readdir(rulesDir);
+    const mdcFiles = await collectMdcFiles(rulesDir);
     const rules: RuleDefinition[] = [];
 
-    for (const entry of entries) {
-      if (!entry.endsWith(".mdc")) continue;
-      const content = await readFile(resolve(rulesDir, entry), "utf-8");
-      rules.push(this.parseRule(basename(entry, ".mdc"), content));
+    for (const filePath of mdcFiles) {
+      const content = await readFile(filePath, "utf-8");
+      const rel = relative(rulesDir, filePath).split(sep).join("/");
+      const id = rel.replace(/\.mdc$/, "");
+      rules.push(this.parseRule(id, content));
     }
 
     return rules;
+  }
+
+  override async uninstall(cwd?: string): Promise<void> {
+    const dir = cwd ?? process.cwd();
+    const rulesDir = resolve(dir, this.configDir);
+    if (!existsSync(rulesDir)) return;
+    await rm(rulesDir, { recursive: true, force: true });
   }
 
   private formatRule(rule: RuleDefinition): string {
@@ -53,44 +109,65 @@ export class CursorRuleAdapter extends BaseRuleAdapter {
   }
 
   private parseRule(id: string, raw: string): RuleDefinition {
-    const rule: RuleDefinition = { id, name: id, content: "", scope: { type: "always" } };
+    const normalized = raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    const rule: RuleDefinition = {
+      id,
+      name: id,
+      content: normalized.trim(),
+      scope: { type: "always" },
+    };
 
-    if (raw.startsWith("---")) {
-      const endIdx = raw.indexOf("---", 3);
-      if (endIdx !== -1) {
-        const fm = raw.slice(3, endIdx).trim();
-        const body = raw.slice(endIdx + 3).trim();
+    const fmMatch = /^---\n([\s\S]*?)\n---(?:\n([\s\S]*))?$/.exec(normalized);
+    if (!fmMatch) {
+      return rule;
+    }
 
-        const globs: string[] = [];
-        let alwaysApply = false;
+    const fm = (fmMatch[1] ?? "").trim();
+    const body = (fmMatch[2] ?? "").trim();
 
-        const lines = fm.split("\n");
-        for (const line of lines) {
-          if (line.startsWith("description:")) {
-            rule.description = line.slice(12).trim();
-          } else if (line.startsWith("alwaysApply:")) {
-            alwaysApply = line.slice(12).trim() === "true";
-          } else if (line.trim().startsWith("- ")) {
-            const pattern = line
-              .trim()
-              .slice(2)
-              .replace(/^["']|["']$/g, "");
-            globs.push(pattern);
-          }
+    const globs: string[] = [];
+    let alwaysApply = false;
+    let inGlobsBlock = false;
+
+    const lines = fm.split("\n");
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith("- ")) {
+        if (inGlobsBlock) {
+          const pattern = unquote(trimmed.slice(2));
+          if (pattern) globs.push(pattern);
         }
+        continue;
+      }
 
-        if (globs.length > 0) {
-          rule.scope = { type: "glob", patterns: globs };
-        } else if (alwaysApply) {
-          rule.scope = { type: "always" };
+      if (line.startsWith("description:")) {
+        inGlobsBlock = false;
+        rule.description = unquote(line.slice(12));
+      } else if (line.startsWith("alwaysApply:")) {
+        inGlobsBlock = false;
+        alwaysApply = line.slice(12).trim() === "true";
+      } else if (line.startsWith("globs:")) {
+        const inline = line.slice(6).trim();
+        if (inline) {
+          inGlobsBlock = false;
+          globs.push(...parseInlineGlobs(inline));
         } else {
-          rule.scope = { type: "manual" };
+          inGlobsBlock = true;
         }
-
-        rule.content = body;
+      } else if (line.includes(":")) {
+        inGlobsBlock = false;
       }
     }
 
+    if (globs.length > 0) {
+      rule.scope = { type: "glob", patterns: globs };
+    } else if (alwaysApply) {
+      rule.scope = { type: "always" };
+    } else {
+      rule.scope = { type: "manual" };
+    }
+
+    rule.content = body;
     return rule;
   }
 }
