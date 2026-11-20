@@ -1,124 +1,116 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-
-vi.mock("./registry.js", () => ({
-  registry: { register: vi.fn() },
-}));
-
-vi.mock("node:fs", () => ({
-  existsSync: vi.fn(() => false),
-}));
-
-vi.mock("node:fs/promises", () => ({
-  readFile: vi.fn(),
-  readdir: vi.fn(),
-  writeFile: vi.fn(),
-  mkdir: vi.fn(),
-  rm: vi.fn(),
-}));
-
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { existsSync } from "node:fs";
-import { readFile, readdir } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { GeminiCliSkillAdapter } from "./gemini-cli.js";
 import type { SkillDefinition } from "../types/index.js";
 
 describe("GeminiCliSkillAdapter", () => {
   let adapter: GeminiCliSkillAdapter;
+  let tempDir: string;
 
   const testSkill: SkillDefinition = {
     id: "review",
     name: "Code Review",
     description: "Review code for best practices",
-    content:
-      "Please review the selected code for:\n- Security issues\n- Performance\n- Best practices",
+    content: "Please review the selected code for security and performance.",
   };
 
-  beforeEach(() => {
-    vi.clearAllMocks();
+  beforeEach(async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "ai-tools-gemini-skills-"));
     adapter = new GeminiCliSkillAdapter();
   });
 
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
   describe("metadata", () => {
-    it("has correct id", () => expect(adapter.id).toBe("gemini-cli"));
-    it("has correct name", () => expect(adapter.name).toBe("Gemini CLI"));
-    it("has native support", () => expect(adapter.nativeSupport).toBe(true));
-    it("has correct config dir", () => {
-      // Gemini CLI custom prompts live at `.gemini/prompts/*.md` (observed in this repo).
-      // Agent Skills, if used, go through `.agents/skills/<id>/SKILL.md` (antigravity-cli).
-      expect(adapter.configDir).toBe(".gemini/prompts");
+    it("has correct id, name, configDir, and userConfigDir", () => {
+      expect(adapter.id).toBe("gemini-cli");
+      expect(adapter.name).toBe("Gemini CLI");
+      expect(adapter.nativeSupport).toBe(true);
+      expect(adapter.configDir).toBe(".gemini/skills");
+      expect(adapter.userConfigDir).toBe(".gemini/skills");
     });
   });
 
-  describe("generate", () => {
-    it("generates one file per skill", async () => {
+  describe("generate & install", () => {
+    it("generates SKILL.md folder layout with YAML frontmatter", async () => {
       const files = await adapter.generate([testSkill]);
       expect(files).toHaveLength(1);
-      expect(files[0]?.path).toBe(".gemini/prompts/review.md");
+      expect(files[0]?.path).toBe(".gemini/skills/review/SKILL.md");
       expect(files[0]?.format).toBe("md");
+      expect(files[0]?.content).toContain(
+        "---\nname: review\ndescription: Review code for best practices\n---",
+      );
+      expect(files[0]?.content).toContain("Please review the selected code");
     });
 
-    it("formats skill with name heading and content", async () => {
-      const files = await adapter.generate([testSkill]);
-      expect(files[0]?.content).toContain("# Code Review");
-      expect(files[0]?.content).toContain("Review code for best practices");
-      expect(files[0]?.content).toContain("Security issues");
+    it("supports user layer via skillsDir('user')", async () => {
+      const files = await adapter.generate([testSkill], "user");
+      expect(files[0]?.path).toBe(".gemini/skills/review/SKILL.md");
     });
 
-    it("handles empty skills array", async () => {
-      const files = await adapter.generate([]);
-      expect(files).toHaveLength(0);
-    });
+    it("copies sourceDir folders verbatim including nested helper files", async () => {
+      const sourceDir = join(tempDir, "src-skill");
+      await mkdir(join(sourceDir, "scripts"), { recursive: true });
+      await writeFile(
+        join(sourceDir, "SKILL.md"),
+        "---\nname: deploy\ndescription: Deploy app\n---\n\nRun deploy.\n",
+        "utf-8",
+      );
+      await writeFile(join(sourceDir, "scripts", "run.sh"), "#!/bin/sh\necho ok\n", "utf-8");
 
-    it("handles multiple skills", async () => {
-      const skills = [testSkill, { ...testSkill, id: "debug", name: "Debug" }];
-      const files = await adapter.generate(skills);
-      expect(files).toHaveLength(2);
-    });
+      const files = await adapter.generate([
+        { id: "deploy", name: "Deploy", content: "", sourceDir },
+      ]);
+      const paths = files.map((f) => f.path).toSorted();
+      expect(paths).toEqual([
+        ".gemini/skills/deploy/SKILL.md",
+        ".gemini/skills/deploy/scripts/run.sh",
+      ]);
 
-    it("handles skill without description", async () => {
-      const skill: SkillDefinition = { id: "test", name: "Test", content: "Content here" };
-      const files = await adapter.generate([skill]);
-      expect(files[0]?.content).toBe("# Test\n\nContent here\n");
+      const destDir = join(tempDir, "project");
+      await adapter.install(files, destDir);
+      expect(await readFile(join(destDir, ".gemini/skills/deploy/scripts/run.sh"), "utf-8")).toBe(
+        "#!/bin/sh\necho ok\n",
+      );
     });
   });
 
-  describe("import", () => {
-    it("returns empty array when dir does not exist", async () => {
-      vi.mocked(existsSync).mockReturnValue(false);
-      const result = await adapter.import("/test");
-      expect(result).toEqual([]);
+  describe("import & uninstall", () => {
+    it("returns empty array when skills dir does not exist", async () => {
+      expect(await adapter.import(tempDir)).toEqual([]);
     });
 
-    it("imports skills from markdown files", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir).mockResolvedValue(["review.md"] as never);
-      vi.mocked(readFile).mockResolvedValue("# Code Review\n\nReview the code");
-      const result = await adapter.import("/test");
-      expect(result).toHaveLength(1);
-      expect(result[0]?.id).toBe("review");
-      expect(result[0]?.name).toBe("Code Review");
+    it("imports SKILL.md folders with CRLF frontmatter support", async () => {
+      const skillDir = join(tempDir, ".gemini", "skills", "review");
+      await mkdir(skillDir, { recursive: true });
+      await writeFile(
+        join(skillDir, "SKILL.md"),
+        "---\r\nname: review\r\ndescription: Review PRs\r\n---\r\n\r\nCheck tests first.\r\n",
+        "utf-8",
+      );
+
+      const imported = await adapter.import(tempDir);
+      expect(imported).toHaveLength(1);
+      expect(imported[0]).toEqual({
+        id: "review",
+        name: "review",
+        description: "Review PRs",
+        content: "Check tests first.",
+      });
     });
 
-    it("skips non-markdown files", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir).mockResolvedValue(["readme.txt", "skill.md"] as never);
-      vi.mocked(readFile).mockResolvedValue("# Skill\n\nContent");
-      const result = await adapter.import("/test");
-      expect(result).toHaveLength(1);
-    });
+    it("removes .gemini/skills on uninstall", async () => {
+      const files = await adapter.generate([testSkill]);
+      await adapter.install(files, tempDir);
+      expect(existsSync(join(tempDir, ".gemini", "skills", "review", "SKILL.md"))).toBe(true);
 
-    it("imports skill without heading", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir).mockResolvedValue(["plain.md"] as never);
-      vi.mocked(readFile).mockResolvedValue("Just content, no heading");
-      const result = await adapter.import("/test");
-      expect(result[0]?.name).toBe("plain");
-      expect(result[0]?.content).toBe("Just content, no heading");
-    });
-
-    it("imports without cwd argument", async () => {
-      vi.mocked(existsSync).mockReturnValue(false);
-      const result = await adapter.import();
-      expect(result).toEqual([]);
+      await adapter.uninstall(tempDir);
+      expect(existsSync(join(tempDir, ".gemini", "skills"))).toBe(false);
     });
   });
 });

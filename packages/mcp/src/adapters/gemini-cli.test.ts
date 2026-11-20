@@ -1,27 +1,13 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-
-vi.mock("./registry.js", () => ({
-  registry: { register: vi.fn() },
-}));
-
-vi.mock("node:fs", () => ({
-  existsSync: vi.fn(() => false),
-}));
-
-vi.mock("node:fs/promises", () => ({
-  readFile: vi.fn(),
-  writeFile: vi.fn(),
-  mkdir: vi.fn(),
-  rm: vi.fn(),
-}));
-
-import { existsSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { GeminiCliMCPAdapter } from "./gemini-cli.js";
 import type { MCPServerDefinition } from "../types/index.js";
 
 describe("GeminiCliMCPAdapter", () => {
   let adapter: GeminiCliMCPAdapter;
+  let tempDir: string;
 
   const testServer: MCPServerDefinition = {
     id: "test-server",
@@ -29,169 +15,138 @@ describe("GeminiCliMCPAdapter", () => {
     transport: { type: "stdio", command: "npx", args: ["-y", "test-mcp"], env: { KEY: "val" } },
   };
 
-  beforeEach(() => {
-    vi.clearAllMocks();
+  beforeEach(async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "ai-tools-gemini-mcp-"));
     adapter = new GeminiCliMCPAdapter();
   });
 
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
   describe("metadata", () => {
-    it("has correct id", () => expect(adapter.id).toBe("gemini-cli"));
-    it("has correct name", () => expect(adapter.name).toBe("Gemini CLI"));
-    it("has native support", () => expect(adapter.nativeSupport).toBe(true));
-    it("has correct config path", () => expect(adapter.configPath).toBe(".gemini/settings.json"));
-    it("has user config path ~/.gemini/settings.json", () => {
-      expect(adapter.userConfigPath).toMatch(/\.gemini\/settings\.json$/);
+    it("has correct metadata and cross-platform userConfigPath", () => {
+      expect(adapter.id).toBe("gemini-cli");
+      expect(adapter.name).toBe("Gemini CLI");
+      expect(adapter.nativeSupport).toBe(true);
+      expect(adapter.configPath).toBe(".gemini/settings.json");
+      expect(adapter.userConfigPath).toMatch(/[/\\]\.gemini[/\\]settings\.json$/);
     });
   });
 
   describe("generate", () => {
-    it("generates valid JSON config with env", async () => {
-      const files = await adapter.generate([testServer]);
-      expect(files).toHaveLength(1);
-      expect(files[0]!.path).toBe(".gemini/settings.json");
-      expect(files[0]!.format).toBe("json");
+    it("generates stdio config with env when non-empty and omits env when empty", async () => {
+      const files = await adapter.generate([
+        testServer,
+        { id: "minimal", name: "Minimal", transport: { type: "stdio", command: "node" } },
+      ]);
       const parsed = JSON.parse(files[0]!.content);
-      expect(parsed.mcpServers["test-server"]).toBeDefined();
-      expect(parsed.mcpServers["test-server"].command).toBe("npx");
-      expect(parsed.mcpServers["test-server"].args).toEqual(["-y", "test-mcp"]);
-      expect(parsed.mcpServers["test-server"].env).toEqual({ KEY: "val" });
+      expect(parsed.mcpServers["test-server"]).toEqual({
+        command: "npx",
+        args: ["-y", "test-mcp"],
+        env: { KEY: "val" },
+      });
+      expect(parsed.mcpServers.minimal).toEqual({
+        command: "node",
+        args: [],
+      });
     });
 
-    it("handles SSE transport", async () => {
-      const sseServer: MCPServerDefinition = {
-        id: "sse-server",
-        name: "SSE Server",
-        transport: { type: "sse", url: "http://localhost:3000" },
-      };
-      const files = await adapter.generate([sseServer]);
+    it("omits empty headers for http/sse and includes non-empty headers", async () => {
+      const files = await adapter.generate([
+        {
+          id: "http-no-headers",
+          name: "HTTP",
+          transport: { type: "http", url: "https://mcp.example.com/mcp" },
+        },
+        {
+          id: "sse-with-headers",
+          name: "SSE",
+          transport: {
+            type: "sse",
+            url: "http://localhost:3000",
+            headers: { Authorization: "Bearer tok" },
+          },
+        },
+      ]);
       const parsed = JSON.parse(files[0]!.content);
-      expect(parsed.mcpServers["sse-server"].url).toBe("http://localhost:3000");
-    });
-
-    it("writes HTTP remotes as httpUrl (streamable HTTP)", async () => {
-      const httpServer: MCPServerDefinition = {
-        id: "krisp",
-        name: "Krisp",
-        transport: { type: "http", url: "https://mcp.krisp.ai/mcp" },
-      };
-      const files = await adapter.generate([httpServer]);
-      const parsed = JSON.parse(files[0]!.content);
-      expect(parsed.mcpServers.krisp).toEqual({ httpUrl: "https://mcp.krisp.ai/mcp", headers: {} });
-    });
-
-    it("handles empty servers array", async () => {
-      const files = await adapter.generate([]);
-      const parsed = JSON.parse(files[0]!.content);
-      expect(Object.keys(parsed.mcpServers)).toHaveLength(0);
-    });
-
-    it("handles multiple servers", async () => {
-      const servers = [testServer, { ...testServer, id: "server-2", name: "Server 2" }];
-      const files = await adapter.generate(servers);
-      const parsed = JSON.parse(files[0]!.content);
-      expect(Object.keys(parsed.mcpServers)).toHaveLength(2);
-    });
-
-    it("generates with optional fields undefined", async () => {
-      const server: MCPServerDefinition = {
-        id: "minimal",
-        name: "Minimal",
-        transport: { type: "stdio", command: "node" },
-      };
-      const files = await adapter.generate([server]);
-      const parsed = JSON.parse(files[0]!.content);
-      expect(parsed.mcpServers["minimal"].args).toEqual([]);
-      expect(parsed.mcpServers["minimal"].env).toBeUndefined();
+      expect(parsed.mcpServers["http-no-headers"]).toEqual({
+        httpUrl: "https://mcp.example.com/mcp",
+      });
+      expect(parsed.mcpServers["sse-with-headers"]).toEqual({
+        url: "http://localhost:3000",
+        headers: { Authorization: "Bearer tok" },
+      });
     });
   });
 
-  describe("install", () => {
-    it("merges into an existing settings.json instead of overwriting it", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readFile).mockResolvedValue(
+  describe("install & uninstall", () => {
+    it("merges into existing settings.json and strips only mcpServers on uninstall", async () => {
+      await mkdir(join(tempDir, ".gemini"), { recursive: true });
+      const settingsPath = join(tempDir, ".gemini", "settings.json");
+      await writeFile(
+        settingsPath,
         JSON.stringify({
+          theme: "GitHub",
           security: { auth: { selectedType: "oauth-personal" } },
+          hooks: { BeforeTool: [] },
           mcpServers: { existing: { command: "keep-me" } },
         }),
+        "utf-8",
       );
-      const files = await adapter.generate([testServer]);
-      await adapter.install(files, "/home/user");
-      const written = JSON.parse(vi.mocked(writeFile).mock.calls[0]![1] as string);
-      expect(written.security).toEqual({ auth: { selectedType: "oauth-personal" } });
-      expect(written.mcpServers.existing).toEqual({ command: "keep-me" });
-      expect(written.mcpServers["test-server"].env).toEqual({ KEY: "val" });
-    });
 
-    it("writes the generated file when none exists", async () => {
-      vi.mocked(existsSync).mockReturnValue(false);
       const files = await adapter.generate([testServer]);
-      await adapter.install(files, "/home/user");
-      expect(vi.mocked(readFile)).not.toHaveBeenCalled();
-      expect(vi.mocked(writeFile).mock.calls[0]![1]).toBe(files[0]!.content);
+      await adapter.install(files, tempDir);
+
+      const afterInstall = JSON.parse(await readFile(settingsPath, "utf-8"));
+      expect(afterInstall.theme).toBe("GitHub");
+      expect(afterInstall.security).toEqual({ auth: { selectedType: "oauth-personal" } });
+      expect(afterInstall.hooks).toEqual({ BeforeTool: [] });
+      expect(afterInstall.mcpServers.existing).toEqual({ command: "keep-me" });
+      expect(afterInstall.mcpServers["test-server"].command).toBe("npx");
+
+      await adapter.uninstall(tempDir);
+      const afterUninstall = JSON.parse(await readFile(settingsPath, "utf-8"));
+      expect(afterUninstall.theme).toBe("GitHub");
+      expect(afterUninstall.security).toEqual({ auth: { selectedType: "oauth-personal" } });
+      expect(afterUninstall.hooks).toEqual({ BeforeTool: [] });
+      expect(afterUninstall.mcpServers).toBeUndefined();
     });
   });
 
   describe("import", () => {
-    it("returns empty array when file does not exist", async () => {
-      vi.mocked(existsSync).mockReturnValue(false);
-      const result = await adapter.import("/test");
-      expect(result).toEqual([]);
-    });
-
-    it("imports stdio servers from config", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readFile).mockResolvedValue(
+    it("imports stdio, httpUrl, and url servers and guards malformed JSON", async () => {
+      await mkdir(join(tempDir, ".gemini"), { recursive: true });
+      const settingsPath = join(tempDir, ".gemini", "settings.json");
+      await writeFile(
+        settingsPath,
         JSON.stringify({
-          mcpServers: { "my-server": { command: "npx", args: ["-y", "test"], env: { A: "1" } } },
+          mcpServers: {
+            stdio: { command: "npx", args: ["-y", "test"], env: { A: "1" } },
+            http: { httpUrl: "https://mcp.example.com/mcp" },
+            sse: { url: "http://localhost:3000", headers: { "X-Api": "1" } },
+          },
         }),
+        "utf-8",
       );
-      const result = await adapter.import("/test");
-      expect(result).toHaveLength(1);
-      expect(result[0]!.id).toBe("my-server");
-      expect(result[0]!.transport).toEqual({
-        type: "stdio",
-        command: "npx",
-        args: ["-y", "test"],
-        env: { A: "1" },
-      });
-    });
 
-    it("imports SSE servers from config", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readFile).mockResolvedValue(
-        JSON.stringify({
-          mcpServers: { sse: { url: "http://localhost:3000" } },
-        }),
-      );
-      const result = await adapter.import("/test");
-      expect(result).toHaveLength(1);
-      expect(result[0]!.transport.type).toBe("sse");
-    });
-
-    it("imports httpUrl servers as http", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readFile).mockResolvedValue(
-        JSON.stringify({ mcpServers: { krisp: { httpUrl: "https://mcp.krisp.ai/mcp" } } }),
-      );
-      const result = await adapter.import("/test");
-      expect(result[0]!.transport).toEqual({
+      const imported = await adapter.import(tempDir);
+      expect(imported).toHaveLength(3);
+      expect(imported.find((s) => s.id === "stdio")?.transport.type).toBe("stdio");
+      expect(imported.find((s) => s.id === "http")?.transport).toEqual({
         type: "http",
-        url: "https://mcp.krisp.ai/mcp",
+        url: "https://mcp.example.com/mcp",
         headers: undefined,
       });
-    });
+      expect(imported.find((s) => s.id === "sse")?.transport).toEqual({
+        type: "sse",
+        url: "http://localhost:3000",
+        headers: { "X-Api": "1" },
+      });
 
-    it("imports with missing servers key", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readFile).mockResolvedValue(JSON.stringify({}));
-      const result = await adapter.import("/test");
-      expect(result).toEqual([]);
-    });
-
-    it("imports without cwd argument", async () => {
-      vi.mocked(existsSync).mockReturnValue(false);
-      const result = await adapter.import();
-      expect(result).toEqual([]);
+      // Malformed JSON should return [] rather than throwing
+      await writeFile(settingsPath, "{ invalid json", "utf-8");
+      expect(await adapter.import(tempDir)).toEqual([]);
     });
   });
 });

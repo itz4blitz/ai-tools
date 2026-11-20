@@ -1,81 +1,168 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-
-vi.mock("./registry.js", () => ({ registry: { register: vi.fn() } }));
-vi.mock("node:fs", () => ({ existsSync: vi.fn(() => false) }));
-vi.mock("node:fs/promises", () => ({
-  readFile: vi.fn(),
-  readdir: vi.fn(),
-  writeFile: vi.fn(),
-  mkdir: vi.fn(),
-  rm: vi.fn(),
-}));
-
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { existsSync } from "node:fs";
-import { readFile, readdir } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { GeminiCliRuleAdapter } from "./gemini-cli.js";
 
 describe("GeminiCliRuleAdapter", () => {
   let adapter: GeminiCliRuleAdapter;
+  let tempDir: string;
 
-  beforeEach(() => {
-    vi.clearAllMocks();
+  beforeEach(async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "ai-tools-gemini-rules-"));
     adapter = new GeminiCliRuleAdapter();
   });
 
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
   describe("metadata", () => {
-    it("has correct id", () => expect(adapter.id).toBe("gemini-cli"));
-    it("has correct name", () => expect(adapter.name).toBe("Gemini CLI"));
-    it("has correct configDir", () => expect(adapter.configDir).toBe(".gemini/rules"));
+    it("has correct id, name, configDir, and userConfigPath", () => {
+      expect(adapter.id).toBe("gemini-cli");
+      expect(adapter.name).toBe("Gemini CLI");
+      expect(adapter.configDir).toBe("GEMINI.md");
+      expect(adapter.userConfigPath).toMatch(/[/\\]\.gemini[/\\]GEMINI\.md$/);
+    });
   });
 
-  describe("generate", () => {
-    it("generates files at correct path", async () => {
+  describe("generate, install, and uninstall", () => {
+    it("returns empty array for no rules", async () => {
+      expect(await adapter.generate([])).toEqual([]);
+    });
+
+    it("generates GEMINI.md with managed section markers", async () => {
       const files = await adapter.generate([
-        { id: "test", name: "Test", content: "Content", scope: { type: "always" } },
+        {
+          id: "ts-strict",
+          name: "Strict TypeScript",
+          description: "Always keep strict mode clean",
+          content: "Never use `any`.",
+          scope: { type: "always" },
+        },
       ]);
-      expect(files[0].path).toBe(".gemini/rules/test.md");
+      expect(files).toHaveLength(1);
+      expect(files[0]?.path).toBe("GEMINI.md");
+      expect(files[0]?.content).toContain("<!-- ai-tools:rules:start -->");
+      expect(files[0]?.content).toContain("<!-- ai-tools:rules:end -->");
+      expect(files[0]?.content).toContain("## Strict TypeScript");
     });
 
-    it("handles empty rules", async () => {
-      expect(await adapter.generate([])).toHaveLength(0);
+    it("preserves manual user prose on install, update, and uninstall", async () => {
+      const geminiPath = join(tempDir, "GEMINI.md");
+      await writeFile(geminiPath, "# Project Notes\n\nKeep commits small.\n", "utf-8");
+
+      const firstFiles = await adapter.generate([
+        { id: "r1", name: "Rule One", content: "Use vitest.", scope: { type: "always" } },
+      ]);
+      await adapter.install(firstFiles, tempDir);
+
+      const afterFirst = await readFile(geminiPath, "utf-8");
+      expect(afterFirst).toContain("# Project Notes\n\nKeep commits small.");
+      expect(afterFirst).toContain("Use vitest.");
+
+      // Re-installing updates the managed block without duplicating it
+      const secondFiles = await adapter.generate([
+        { id: "r2", name: "Rule Two", content: "Run typecheck.", scope: { type: "always" } },
+      ]);
+      await adapter.install(secondFiles, tempDir);
+
+      const afterSecond = await readFile(geminiPath, "utf-8");
+      expect(afterSecond).toContain("# Project Notes\n\nKeep commits small.");
+      expect(afterSecond).not.toContain("Use vitest.");
+      expect(afterSecond).toContain("Run typecheck.");
+      expect(afterSecond.match(/ai-tools:rules:start/g)).toHaveLength(1);
+
+      // Uninstall removes only the managed section and preserves manual prose
+      await adapter.uninstall(tempDir);
+      const afterUninstall = await readFile(geminiPath, "utf-8");
+      expect(afterUninstall).toBe("# Project Notes\n\nKeep commits small.\n");
+    });
+
+    it("deletes GEMINI.md on uninstall when only the managed block existed", async () => {
+      const files = await adapter.generate([
+        { id: "r1", name: "Only Managed", content: "Managed body.", scope: { type: "always" } },
+      ]);
+      await adapter.install(files, tempDir);
+      expect(existsSync(join(tempDir, "GEMINI.md"))).toBe(true);
+
+      await adapter.uninstall(tempDir);
+      expect(existsSync(join(tempDir, "GEMINI.md"))).toBe(false);
     });
   });
 
-  describe("import", () => {
-    it("returns empty when dir missing", async () => {
-      vi.mocked(existsSync).mockReturnValue(false);
-      expect(await adapter.import("/test")).toEqual([]);
+  describe("import & user layer", () => {
+    it("round-trips managed rules and handles CRLF", async () => {
+      const files = await adapter.generate([
+        {
+          id: "style",
+          name: "Style",
+          description: "Formatting rules",
+          content: "Use 2 spaces.",
+          scope: { type: "always" },
+        },
+        {
+          id: "tests",
+          name: "Testing",
+          content: "Write real tests.",
+          scope: { type: "always" },
+        },
+      ]);
+      await writeFile(
+        join(tempDir, "GEMINI.md"),
+        files[0]!.content.replace(/\n/g, "\r\n"),
+        "utf-8",
+      );
+
+      const imported = await adapter.import(tempDir);
+      expect(imported).toHaveLength(2);
+      expect(imported[0]).toEqual({
+        id: "style",
+        name: "Style",
+        description: "Formatting rules",
+        content: "Use 2 spaces.",
+        scope: { type: "always" },
+      });
+      expect(imported[1]).toEqual({
+        id: "tests",
+        name: "Testing",
+        content: "Write real tests.",
+        scope: { type: "always" },
+      });
     });
 
-    it("imports rules", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir).mockResolvedValue(["rule.md"] as never);
-      vi.mocked(readFile).mockResolvedValue("# My Rule\n\nContent here.");
-      const result = await adapter.import("/test");
-      expect(result[0].name).toBe("My Rule");
+    it("imports hand-authored GEMINI.md without managed markers", async () => {
+      await writeFile(
+        join(tempDir, "GEMINI.md"),
+        "# Repo Instructions\n\nAlways verify builds.\n",
+        "utf-8",
+      );
+      const imported = await adapter.import(tempDir);
+      expect(imported).toEqual([
+        {
+          id: "gemini-md",
+          name: "Repo Instructions",
+          content: "Always verify builds.",
+          scope: { type: "always" },
+        },
+      ]);
     });
 
-    it("skips non-markdown files", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir).mockResolvedValue(["readme.txt", "rule.md"] as never);
-      vi.mocked(readFile).mockResolvedValue("# Skill\n\nContent");
-      const result = await adapter.import("/test");
-      expect(result).toHaveLength(1);
-    });
+    it("supports user layer ~/.gemini/GEMINI.md", async () => {
+      const fakeUserGemini = join(tempDir, "home", ".gemini", "GEMINI.md");
+      Object.defineProperty(adapter, "userConfigPath", { value: fakeUserGemini });
 
-    it("imports rule without heading", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir).mockResolvedValue(["plain.md"] as never);
-      vi.mocked(readFile).mockResolvedValue("Just content, no heading");
-      const result = await adapter.import("/test");
-      expect(result[0].name).toBe("plain");
-      expect(result[0].content).toBe("Just content, no heading");
-    });
+      const files = await adapter.generate([
+        { id: "global", name: "Global Rule", content: "Be concise.", scope: { type: "always" } },
+      ]);
+      await adapter.installUser(files);
+      const imported = await adapter.importUser();
+      expect(imported).toHaveLength(1);
+      expect(imported[0]?.id).toBe("global");
 
-    it("imports without cwd argument", async () => {
-      vi.mocked(existsSync).mockReturnValue(false);
-      const result = await adapter.import();
-      expect(result).toEqual([]);
+      await adapter.uninstallUser();
+      expect(existsSync(fakeUserGemini)).toBe(false);
     });
   });
 });

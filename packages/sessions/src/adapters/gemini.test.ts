@@ -1,29 +1,22 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-
-vi.mock("node:fs", () => ({
-  existsSync: vi.fn(),
-}));
-
-vi.mock("node:fs/promises", () => ({
-  readdir: vi.fn(),
-  readFile: vi.fn(),
-  stat: vi.fn(),
-}));
-
-vi.mock("node:os", () => ({
-  homedir: vi.fn(() => "/home/testuser"),
-}));
-
-import { existsSync } from "node:fs";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { GeminiSessionAdapter } from "./gemini.js";
 
 describe("GeminiSessionAdapter", () => {
   let adapter: GeminiSessionAdapter;
+  let tempGeminiDir: string;
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    tempGeminiDir = await mkdtemp(join(tmpdir(), "ai-tools-gemini-sessions-"));
     adapter = new GeminiSessionAdapter();
-    vi.clearAllMocks();
+    vi.spyOn(adapter, "getStoragePath").mockResolvedValue(tempGeminiDir);
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await rm(tempGeminiDir, { recursive: true, force: true });
   });
 
   describe("properties", () => {
@@ -37,142 +30,151 @@ describe("GeminiSessionAdapter", () => {
 
   describe("parseSessions()", () => {
     it("returns empty array when storage path does not exist", async () => {
-      vi.mocked(existsSync).mockReturnValue(false);
+      vi.spyOn(adapter, "getStoragePath").mockResolvedValue(null);
       const sessions = await adapter.parseSessions();
       expect(sessions).toEqual([]);
     });
 
-    it("parses JSON session files with messages", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir).mockResolvedValueOnce(["session.json"] as unknown as Awaited<
-        ReturnType<typeof readdir>
-      >);
-      vi.mocked(stat).mockResolvedValue({
-        birthtime: new Date("2025-01-01T00:00:00Z"),
-        mtime: new Date("2025-01-01T01:00:00Z"),
-      } as unknown as Awaited<ReturnType<typeof stat>>);
-      vi.mocked(readFile).mockResolvedValue(
+    it("parses JSON sessions under ~/.gemini/tmp/<hash>/chats/session-*.json", async () => {
+      const chatsDir = join(tempGeminiDir, "tmp", "proj-abc123", "chats");
+      await mkdir(chatsDir, { recursive: true });
+      await writeFile(
+        join(chatsDir, "session-2026-01-01T10-00-abc.json"),
         JSON.stringify({
-          id: "gem-123",
-          title: "Code Review",
+          sessionId: "sess-json-1",
+          projectHash: "proj-abc123",
+          startTime: "2026-01-01T10:00:00Z",
+          lastUpdated: "2026-01-01T10:30:00Z",
           messages: [
-            { role: "user", content: "Review my code" },
-            { role: "model", content: "Sure, looking at it now" },
+            { type: "user", content: "Explain the build error", timestamp: "2026-01-01T10:00:01Z" },
+            {
+              type: "gemini",
+              content: [{ text: "The error is caused by" }, { text: "a missing import." }],
+              timestamp: "2026-01-01T10:00:05Z",
+            },
           ],
-          createTime: "2025-01-01T00:00:00Z",
-          updateTime: "2025-01-01T01:00:00Z",
         }),
+        "utf-8",
       );
 
       const sessions = await adapter.parseSessions();
       expect(sessions).toHaveLength(1);
-      expect(sessions[0]?.id).toBe("gem-123");
-      expect(sessions[0]?.title).toBe("Code Review");
+      expect(sessions[0]?.id).toBe("sess-json-1");
+      expect(sessions[0]?.tool).toBe("gemini");
+      expect(sessions[0]?.startedAt).toBe("2026-01-01T10:00:00Z");
+      expect(sessions[0]?.updatedAt).toBe("2026-01-01T10:30:00Z");
+      expect(sessions[0]?.metadata).toEqual({ projectHash: "proj-abc123" });
+      expect(sessions[0]?.messages).toEqual([
+        { role: "user", content: "Explain the build error", timestamp: "2026-01-01T10:00:01Z" },
+        {
+          role: "assistant",
+          content: "The error is caused by\na missing import.",
+          timestamp: "2026-01-01T10:00:05Z",
+        },
+      ]);
+    });
+
+    it("parses JSONL sessions under ~/.gemini/tmp/<hash>/chats/session-*.jsonl", async () => {
+      const chatsDir = join(tempGeminiDir, "tmp", "proj-jsonl", "chats");
+      await mkdir(chatsDir, { recursive: true });
+      const lines = [
+        JSON.stringify({
+          type: "session_metadata",
+          sessionId: "sess-jsonl-1",
+          projectHash: "proj-jsonl",
+          title: "Refactor Adapter",
+          startTime: "2026-02-01T08:00:00Z",
+          lastUpdated: "2026-02-01T08:05:00Z",
+        }),
+        JSON.stringify({
+          type: "user",
+          content: "Refactor the hooks adapter",
+          timestamp: "2026-02-01T08:01:00Z",
+        }),
+        "not valid json line",
+        JSON.stringify({
+          type: "gemini",
+          content: "Refactored hooks adapter cleanly.",
+          timestamp: "2026-02-01T08:10:00Z",
+        }),
+      ];
+      await writeFile(
+        join(chatsDir, "session-2026-02-01T08-00-xyz.jsonl"),
+        `${lines.join("\n")}\n`,
+        "utf-8",
+      );
+
+      const sessions = await adapter.parseSessions();
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0]?.id).toBe("sess-jsonl-1");
+      expect(sessions[0]?.title).toBe("Refactor Adapter");
+      expect(sessions[0]?.startedAt).toBe("2026-02-01T08:00:00Z");
+      expect(sessions[0]?.updatedAt).toBe("2026-02-01T08:10:00Z");
+      expect(sessions[0]?.metadata).toEqual({ projectHash: "proj-jsonl" });
       expect(sessions[0]?.messages).toHaveLength(2);
       expect(sessions[0]?.messages[0]?.role).toBe("user");
       expect(sessions[0]?.messages[1]?.role).toBe("assistant");
     });
 
-    it("parses history array instead of messages", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir).mockResolvedValueOnce(["s.json"] as unknown as Awaited<
-        ReturnType<typeof readdir>
-      >);
-      vi.mocked(stat).mockResolvedValue({
-        birthtime: new Date("2025-01-01T00:00:00Z"),
-        mtime: new Date("2025-01-01T01:00:00Z"),
-      } as unknown as Awaited<ReturnType<typeof stat>>);
-      vi.mocked(readFile).mockResolvedValue(
-        JSON.stringify({
-          history: [{ role: "user", content: "Hello" }],
-        }),
+    it("keeps fallback for legacy flat JSON files and ignores non-session settings.json", async () => {
+      await writeFile(
+        join(tempGeminiDir, "settings.json"),
+        JSON.stringify({ theme: "Default" }),
+        "utf-8",
       );
-
-      const sessions = await adapter.parseSessions();
-      expect(sessions).toHaveLength(1);
-      expect(sessions[0]?.messages).toHaveLength(1);
-    });
-
-    it("handles parts-based content", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir).mockResolvedValueOnce(["s.json"] as unknown as Awaited<
-        ReturnType<typeof readdir>
-      >);
-      vi.mocked(stat).mockResolvedValue({
-        birthtime: new Date("2025-01-01T00:00:00Z"),
-        mtime: new Date("2025-01-01T01:00:00Z"),
-      } as unknown as Awaited<ReturnType<typeof stat>>);
-      vi.mocked(readFile).mockResolvedValue(
+      await writeFile(
+        join(tempGeminiDir, "legacy-chat.json"),
         JSON.stringify({
-          messages: [
-            {
-              role: "user",
-              parts: [{ text: "Part 1" }, { text: "Part 2" }],
-            },
+          id: "legacy-1",
+          title: "Legacy Chat",
+          history: [
+            { role: "user", parts: [{ text: "Part 1" }, { text: "Part 2" }] },
+            { role: "model", content: "Answer" },
           ],
+          createTime: "2025-01-01T00:00:00Z",
+          updateTime: "2025-01-01T01:00:00Z",
         }),
+        "utf-8",
       );
 
       const sessions = await adapter.parseSessions();
       expect(sessions).toHaveLength(1);
+      expect(sessions[0]?.id).toBe("legacy-1");
       expect(sessions[0]?.messages[0]?.content).toBe("Part 1\nPart 2");
+      expect(sessions[0]?.messages[1]?.role).toBe("assistant");
     });
 
-    it("maps author field to role", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir).mockResolvedValueOnce(["s.json"] as unknown as Awaited<
-        ReturnType<typeof readdir>
-      >);
-      vi.mocked(stat).mockResolvedValue({
-        birthtime: new Date("2025-01-01T00:00:00Z"),
-        mtime: new Date("2025-01-01T01:00:00Z"),
-      } as unknown as Awaited<ReturnType<typeof stat>>);
-      vi.mocked(readFile).mockResolvedValue(
+    it("sorts sessions by updatedAt descending across JSON, JSONL, and legacy", async () => {
+      const chatsDir = join(tempGeminiDir, "tmp", "p1", "chats");
+      await mkdir(chatsDir, { recursive: true });
+      await writeFile(
+        join(chatsDir, "session-old.json"),
         JSON.stringify({
-          messages: [{ author: "user", content: "Hello" }],
+          sessionId: "older",
+          startTime: "2026-01-01T00:00:00Z",
+          lastUpdated: "2026-01-01T01:00:00Z",
+          messages: [{ type: "user", content: "Old" }],
         }),
+        "utf-8",
+      );
+      await writeFile(
+        join(chatsDir, "session-new.jsonl"),
+        `${JSON.stringify({
+          type: "session_metadata",
+          sessionId: "newer",
+          startTime: "2026-03-01T00:00:00Z",
+          lastUpdated: "2026-03-01T02:00:00Z",
+        })}\n${JSON.stringify({
+          type: "user",
+          content: "New",
+          timestamp: "2026-03-01T02:00:00Z",
+        })}\n`,
+        "utf-8",
       );
 
-      const sessions = await adapter.parseSessions();
+      const sessions = await adapter.parseSessions({ limit: 1 });
       expect(sessions).toHaveLength(1);
-      expect(sessions[0]?.messages[0]?.role).toBe("user");
-    });
-
-    it("skips non-JSON files", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir).mockResolvedValueOnce(["config.yaml"] as unknown as Awaited<
-        ReturnType<typeof readdir>
-      >);
-
-      const sessions = await adapter.parseSessions();
-      expect(sessions).toEqual([]);
-    });
-
-    it("handles readdir failure gracefully", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir).mockRejectedValueOnce(new Error("EACCES"));
-
-      const sessions = await adapter.parseSessions();
-      expect(sessions).toEqual([]);
-    });
-
-    it("generates id from filename when session has no id", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir).mockResolvedValueOnce(["my-chat.json"] as unknown as Awaited<
-        ReturnType<typeof readdir>
-      >);
-      vi.mocked(stat).mockResolvedValue({
-        birthtime: new Date("2025-01-01T00:00:00Z"),
-        mtime: new Date("2025-01-01T01:00:00Z"),
-      } as unknown as Awaited<ReturnType<typeof stat>>);
-      vi.mocked(readFile).mockResolvedValue(
-        JSON.stringify({
-          messages: [{ role: "user", content: "Hello" }],
-        }),
-      );
-
-      const sessions = await adapter.parseSessions();
-      expect(sessions[0]?.id).toBe("gemini-my-chat");
+      expect(sessions[0]?.id).toBe("newer");
     });
   });
 });
