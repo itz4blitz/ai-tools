@@ -35,6 +35,10 @@ function getCommandBasename(command: string): string {
   return idx === -1 ? normalized : normalized.slice(idx + 1);
 }
 
+function normalizeCommandName(basename: string): string {
+  return basename.toLowerCase().replace(/\.(exe|cmd|bat|ps1)$/, "");
+}
+
 export function auditServers(
   tool: string,
   servers: MCPServerDefinition[],
@@ -56,21 +60,24 @@ export function auditServers(
     const url = "url" in server.transport ? server.transport.url : "";
 
     const basename = getCommandBasename(command);
-    const isAllowlistedWrapper = allowlistedSuffixes.some((suffix) => basename.endsWith(suffix));
+    const normalizedName = normalizeCommandName(basename);
+    const isAllowlistedWrapper = allowlistedSuffixes.some((suffix) =>
+      normalizedName.endsWith(suffix.toLowerCase()),
+    );
     const matchedWrapper =
       !isAllowlistedWrapper &&
-      secretWrapperPatterns.find(
-        (pattern) =>
-          basename === pattern ||
-          basename.startsWith(`${pattern}-`) ||
-          basename.startsWith(`${pattern}_`),
-      );
+      secretWrapperPatterns.find((pattern) => {
+        const lower = pattern.toLowerCase();
+        return (
+          normalizedName === lower ||
+          normalizedName.startsWith(`${lower}-`) ||
+          normalizedName.startsWith(`${lower}_`)
+        );
+      });
     const matchedEnvVar = secretEnvVars.find((key) => Boolean(env[key]));
 
     if (source === "user" && (matchedWrapper || matchedEnvVar)) {
-      const reason = matchedWrapper
-        ? `command wrapper "${basename}"`
-        : `env ${matchedEnvVar}=${matchedEnvVar ? env[matchedEnvVar] : ""}`;
+      const reason = matchedWrapper ? `command wrapper "${basename}"` : `env ${matchedEnvVar}`;
       findings.push({
         tool,
         server: server.id,

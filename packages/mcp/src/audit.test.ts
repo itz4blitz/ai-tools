@@ -80,7 +80,7 @@ describe("auditServers", () => {
     ).toEqual([]);
   });
 
-  it("flags interactive secret-manager env vars such as OP_ACCOUNT in user configs", () => {
+  it("flags interactive secret-manager env vars such as OP_ACCOUNT without leaking the value", () => {
     const server: MCPServerDefinition = {
       id: "tracker",
       name: "tracker",
@@ -90,21 +90,43 @@ describe("auditServers", () => {
         env: { OP_ACCOUNT: "acme.1password.com" },
       },
     };
-    const kinds = auditServers("zcode", [server], "user").map((f) => f.kind);
-    expect(kinds).toContain("secret-wrapper-in-user-config");
+    const findings = auditServers("zcode", [server], "user");
+    expect(findings.map((f) => f.kind)).toContain("secret-wrapper-in-user-config");
+    expect(findings[0]?.detail).toContain("env OP_ACCOUNT");
+    expect(findings[0]?.detail).not.toContain("acme.1password.com");
   });
 
-  it("handles Windows backslash paths when inspecting wrapper basenames", () => {
-    const server: MCPServerDefinition = {
+  it("handles Windows backslash paths and executable extensions when inspecting wrapper basenames", () => {
+    const bareExe: MCPServerDefinition = {
+      id: "win-bare",
+      name: "win-bare",
+      transport: {
+        type: "stdio",
+        command: "C:\\Users\\dev\\.local\\bin\\OP-RUN.EXE",
+      },
+    };
+    const corpCmd: MCPServerDefinition = {
       id: "win-docs",
       name: "win-docs",
       transport: {
         type: "stdio",
-        command: "C:\\Users\\dev\\.local\\bin\\op-run-corp",
+        command: "C:\\Users\\dev\\.local\\bin\\op-run-corp.cmd",
       },
     };
-    expect(auditServers("cursor", [server], "user").map((f) => f.kind)).toContain(
+    const serviceAccountCmd: MCPServerDefinition = {
+      id: "win-sa",
+      name: "win-sa",
+      transport: {
+        type: "stdio",
+        command: "C:\\Users\\dev\\.local\\bin\\op-run-corp-sa.cmd",
+      },
+    };
+    expect(auditServers("cursor", [bareExe], "user").map((f) => f.kind)).toContain(
       "secret-wrapper-in-user-config",
     );
+    expect(auditServers("cursor", [corpCmd], "user").map((f) => f.kind)).toContain(
+      "secret-wrapper-in-user-config",
+    );
+    expect(auditServers("cursor", [serviceAccountCmd], "user")).toEqual([]);
   });
 });

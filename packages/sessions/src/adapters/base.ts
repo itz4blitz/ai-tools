@@ -63,10 +63,10 @@ export abstract class BaseSessionAdapter {
     for (const p of this.storagePaths) {
       let resolved = p.replace("~", homedir());
       if (appData) {
-        resolved = resolved.replace(/%APPDATA%/gi, appData);
+        resolved = resolved.replace(/%APPDATA%/gi, () => appData);
       }
       if (localAppData) {
-        resolved = resolved.replace(/%LOCALAPPDATA%/gi, localAppData);
+        resolved = resolved.replace(/%LOCALAPPDATA%/gi, () => localAppData);
       }
       if (existsSync(resolved)) return resolved;
     }
