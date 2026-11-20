@@ -1,38 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { HookContext, HookDefinition, HookEventType } from "../index.js";
-
-const removeFileSpy = vi.fn();
-const commandExistsSpy = vi.fn<(cmd: string) => Promise<boolean>>().mockResolvedValue(false);
-
-vi.mock("./index.js", () => {
-  const registry = { register: vi.fn() };
-  abstract class BaseAdapter {
-    abstract readonly id: string;
-    abstract readonly name: string;
-    abstract readonly version: string;
-    abstract readonly capabilities: unknown;
-    abstract detect(): Promise<boolean>;
-    abstract generate(hooks: HookDefinition[]): Promise<unknown[]>;
-    abstract mapEvent(event: string): string[];
-    abstract mapNativeEvent(nativeEvent: string): string[];
-    async install() {}
-    async uninstall() {}
-    protected async commandExists(cmd: string) {
-      return commandExistsSpy(cmd);
-    }
-    protected async removeFile(path: string) {
-      removeFileSpy(path);
-    }
-  }
-  return { BaseAdapter, registry };
-});
-
-vi.mock("node:fs", () => ({
-  existsSync: vi.fn(() => false),
-}));
-
 import { existsSync } from "node:fs";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import vm from "node:vm";
+import type { HookContext, HookDefinition, HookEventType } from "../index.js";
 import { CodexAdapter } from "./codex.js";
+
+async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
+  const dir = await mkdtemp(join(tmpdir(), "ai-tools-hooks-codex-"));
+  try {
+    await fn(dir);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
 
 function makeHandler() {
   return async (ctx: HookContext, next: () => Promise<void>) => {
@@ -53,108 +35,103 @@ describe("CodexAdapter", () => {
   };
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.restoreAllMocks();
     adapter = new CodexAdapter();
   });
 
   describe("metadata", () => {
-    it("has correct id", () => expect(adapter.id).toBe("codex"));
-    it("has correct name", () => expect(adapter.name).toBe("Codex"));
-    it("has correct version", () => expect(adapter.version).toBe("1.0"));
+    it("has correct id, name, and version", () => {
+      expect(adapter.id).toBe("codex");
+      expect(adapter.name).toBe("Codex");
+      expect(adapter.version).toBe("1.0");
+    });
   });
 
   describe("capabilities", () => {
-    it("supports before hooks", () => expect(adapter.capabilities.beforeHooks).toBe(true));
-    it("supports after hooks", () => expect(adapter.capabilities.afterHooks).toBe(true));
-    it("supports MCP", () => expect(adapter.capabilities.mcp).toBe(true));
-    it("supports config file generation", () => expect(adapter.capabilities.configFile).toBe(true));
-    it("lists supported events including session:end and prompt:response", () => {
+    it("supports before/after hooks, MCP, configFile, and excludes dead file:delete", () => {
+      expect(adapter.capabilities.beforeHooks).toBe(true);
+      expect(adapter.capabilities.afterHooks).toBe(true);
+      expect(adapter.capabilities.mcp).toBe(true);
+      expect(adapter.capabilities.configFile).toBe(true);
       expect(adapter.capabilities.supportedEvents).toContain("session:end");
       expect(adapter.capabilities.supportedEvents).toContain("prompt:response");
-    });
-    it("treats prompt submit and shell before as blockable", () => {
+      expect(adapter.capabilities.supportedEvents).not.toContain("file:delete");
       expect(adapter.capabilities.blockableEvents).toContain("prompt:submit");
       expect(adapter.capabilities.blockableEvents).toContain("shell:before");
+      expect(adapter.capabilities.blockableEvents).not.toContain("file:delete");
     });
   });
 
-  describe("mapEvent", () => {
-    it("maps session:start to SessionStart", () => {
+  describe("mapEvent & mapNativeEvent", () => {
+    it("maps session:end to SessionEnd and prompt:response to Stop", () => {
       expect(adapter.mapEvent("session:start")).toEqual(["SessionStart"]);
-    });
-
-    it("maps session:end to Stop", () => {
-      expect(adapter.mapEvent("session:end")).toEqual(["Stop"]);
-    });
-
-    it("maps prompt:submit to UserPromptSubmit", () => {
+      expect(adapter.mapEvent("session:end")).toEqual(["SessionEnd"]);
       expect(adapter.mapEvent("prompt:submit")).toEqual(["UserPromptSubmit"]);
-    });
-
-    it("maps prompt:response to Stop", () => {
       expect(adapter.mapEvent("prompt:response")).toEqual(["Stop"]);
-    });
-
-    it("maps tool:before to PreToolUse", () => {
-      expect(adapter.mapEvent("tool:before")).toEqual(["PreToolUse"]);
-    });
-
-    it("maps tool:after to PostToolUse", () => {
-      expect(adapter.mapEvent("tool:after")).toEqual(["PostToolUse"]);
-    });
-
-    it("maps shell events to tool lifecycle events", () => {
       expect(adapter.mapEvent("shell:before")).toEqual(["PreToolUse"]);
       expect(adapter.mapEvent("shell:after")).toEqual(["PostToolUse"]);
-    });
-
-    it("returns empty array for notification", () => {
+      expect(adapter.mapEvent("file:delete")).toEqual([]);
       expect(adapter.mapEvent("notification" as HookEventType)).toEqual([]);
     });
-  });
 
-  describe("mapNativeEvent", () => {
-    it("maps SessionStart", () => {
+    it("reverse maps native events accurately", () => {
       expect(adapter.mapNativeEvent("SessionStart")).toEqual(["session:start"]);
-    });
-
-    it("maps PreToolUse to before events", () => {
+      expect(adapter.mapNativeEvent("SessionEnd")).toEqual(["session:end"]);
+      expect(adapter.mapNativeEvent("Stop")).toEqual(["prompt:response"]);
       expect(adapter.mapNativeEvent("PreToolUse")).toEqual([
         "tool:before",
         "file:read",
         "file:write",
         "file:edit",
-        "file:delete",
         "shell:before",
         "mcp:before",
       ]);
-    });
-
-    it("maps PostToolUse to after events", () => {
       expect(adapter.mapNativeEvent("PostToolUse")).toEqual([
         "tool:after",
         "shell:after",
         "mcp:after",
       ]);
     });
-
-    it("maps Stop to session:end and prompt:response", () => {
-      expect(adapter.mapNativeEvent("Stop")).toEqual(["session:end", "prompt:response"]);
-    });
   });
 
   describe("generate", () => {
-    it("generates a runner script and hooks config", async () => {
-      const files = await adapter.generate([testHook]);
+    it("generates valid JS runner with JSON-escaped Windows PROJECT_ROOT and quoted command path", async () => {
+      const winPath = "C:\\Users\\test user\\my project";
+      vi.spyOn(process, "cwd").mockReturnValue(winPath);
+
+      const files = await adapter.generate([
+        testHook,
+        { ...testHook, id: "end", events: ["session:end"] },
+      ]);
       expect(files).toHaveLength(2);
       expect(files[0]?.path).toBe(".codex/hooks/ai-tools-hooks-runner.js");
       expect(files[1]?.path).toBe(".codex/hooks.json");
-    });
 
-    it("emits PreToolUse for shell:before hooks", async () => {
-      const files = await adapter.generate([testHook]);
-      const config = JSON.parse(files[1]!.content);
-      expect(config.hooks.PreToolUse).toBeDefined();
+      const runner = files[0]!.content;
+      expect(runner).toContain("const PROJECT_ROOT = ");
+      // Strip shebang and ESM import so vm.Script can syntax-check the generated JS
+      const syntaxCheckSource = runner
+        .replace(/^#!.*\n/, "")
+        .replace(
+          /^import .*$/m,
+          "const loadConfig = async () => ({}); const HookEngine = class {};",
+        );
+      expect(() => new vm.Script(syntaxCheckSource)).not.toThrow();
+
+      // Check Codex native shell tool names and SessionEnd handling in runner
+      for (const toolName of ["shell", "exec_command", "shell_command", "local_shell"]) {
+        expect(runner).toContain(`case "${toolName}":`);
+      }
+      expect(runner).toContain('case "SessionEnd":');
+
+      const config = JSON.parse(files[1]!.content) as {
+        hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+      };
+      expect(config.hooks.PreToolUse).toHaveLength(1);
+      expect(config.hooks.SessionEnd).toHaveLength(1);
+      expect(config.hooks.PreToolUse![0]!.hooks[0]!.command).toMatch(
+        /^node ".*ai-tools-hooks-runner\.js" PreToolUse$/,
+      );
     });
 
     it("deduplicates native events shared by multiple universal events", async () => {
@@ -162,43 +139,103 @@ describe("CodexAdapter", () => {
         testHook,
         { ...testHook, id: "mcp", events: ["mcp:before"] },
       ]);
-      const config = JSON.parse(files[1]!.content);
+      const config = JSON.parse(files[1]!.content) as { hooks: Record<string, unknown[]> };
       expect(config.hooks.PreToolUse).toHaveLength(1);
     });
+  });
 
-    it("runner script includes Codex-specific markers", async () => {
-      const files = await adapter.generate([testHook]);
-      const runner = files[0]!.content;
-      expect(runner).toContain("ai-hooks runner for Codex");
-      expect(runner).toContain('const toolInfo = { name: "codex", version: "1.0" }');
-      expect(runner).toContain('hookEventName === "PreToolUse"');
-      expect(runner).toContain("process.exit(2)");
+  describe("install and uninstall", () => {
+    it("merges into existing .codex/hooks.json on install and strips only ai-tools entries on uninstall", async () => {
+      await withTempDir(async (dir) => {
+        vi.spyOn(process, "cwd").mockReturnValue(dir);
+
+        const hooksJsonPath = join(dir, ".codex", "hooks.json");
+        await mkdir(join(dir, ".codex"), { recursive: true });
+        await writeFile(
+          hooksJsonPath,
+          JSON.stringify(
+            {
+              customKey: true,
+              hooks: {
+                PreToolUse: [
+                  {
+                    matcher: "Bash",
+                    hooks: [{ type: "command", command: "echo user-hook" }],
+                  },
+                ],
+                Notification: [
+                  {
+                    hooks: [{ type: "command", command: "echo notify" }],
+                  },
+                ],
+              },
+            },
+            null,
+            2,
+          ),
+          "utf-8",
+        );
+
+        const configs = await adapter.generate([testHook]);
+        await adapter.install(configs);
+
+        expect(existsSync(join(dir, ".codex/hooks/ai-tools-hooks-runner.js"))).toBe(true);
+
+        const installed = JSON.parse(await readFile(hooksJsonPath, "utf-8")) as {
+          customKey?: boolean;
+          hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+        };
+        expect(installed.customKey).toBe(true);
+        expect(installed.hooks.Notification).toHaveLength(1);
+        expect(installed.hooks.PreToolUse).toHaveLength(2);
+        expect(installed.hooks.PreToolUse![0]!.hooks[0]!.command).toBe("echo user-hook");
+        expect(installed.hooks.PreToolUse![1]!.hooks[0]!.command).toContain(
+          "ai-tools-hooks-runner.js",
+        );
+
+        // Re-install should not duplicate ai-tools entries
+        await adapter.install(configs);
+        const reinstalled = JSON.parse(await readFile(hooksJsonPath, "utf-8")) as {
+          hooks: Record<string, unknown[]>;
+        };
+        expect(reinstalled.hooks.PreToolUse).toHaveLength(2);
+
+        // Uninstall strips only ai-tools entries and keeps user hooks + customKey
+        await adapter.uninstall();
+        expect(existsSync(join(dir, ".codex/hooks/ai-tools-hooks-runner.js"))).toBe(false);
+        expect(existsSync(hooksJsonPath)).toBe(true);
+
+        const afterUninstall = JSON.parse(await readFile(hooksJsonPath, "utf-8")) as {
+          customKey?: boolean;
+          hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+        };
+        expect(afterUninstall.customKey).toBe(true);
+        expect(afterUninstall.hooks.PreToolUse).toHaveLength(1);
+        expect(afterUninstall.hooks.PreToolUse![0]!.hooks[0]!.command).toBe("echo user-hook");
+        expect(afterUninstall.hooks.Notification).toHaveLength(1);
+      });
+    });
+
+    it("deletes .codex/hooks.json on uninstall when no user entries remain", async () => {
+      await withTempDir(async (dir) => {
+        vi.spyOn(process, "cwd").mockReturnValue(dir);
+
+        const configs = await adapter.generate([testHook]);
+        await adapter.install(configs);
+        expect(existsSync(join(dir, ".codex/hooks.json"))).toBe(true);
+
+        await adapter.uninstall();
+        expect(existsSync(join(dir, ".codex/hooks.json"))).toBe(false);
+      });
     });
   });
 
   describe("detect", () => {
-    it("returns true when command exists", async () => {
-      commandExistsSpy.mockResolvedValueOnce(true);
-      expect(await adapter.detect()).toBe(true);
-    });
-
-    it("returns true when .codex directory exists", async () => {
-      vi.mocked(existsSync).mockReturnValueOnce(true);
-      expect(await adapter.detect()).toBe(true);
-    });
-
-    it("returns false when command and directory are missing", async () => {
-      commandExistsSpy.mockResolvedValueOnce(false);
-      vi.mocked(existsSync).mockReturnValueOnce(false);
-      expect(await adapter.detect()).toBe(false);
-    });
-  });
-
-  describe("uninstall", () => {
-    it("removes generated Codex hook files", async () => {
-      await adapter.uninstall();
-      expect(removeFileSpy).toHaveBeenCalledWith(".codex/hooks/ai-tools-hooks-runner.js");
-      expect(removeFileSpy).toHaveBeenCalledWith(".codex/hooks.json");
+    it("accepts cwd and returns true when .codex exists in that directory", async () => {
+      await withTempDir(async (dir) => {
+        await mkdir(join(dir, ".codex"), { recursive: true });
+        expect(await adapter.detect(dir)).toBe(true);
+      });
     });
   });
 });
