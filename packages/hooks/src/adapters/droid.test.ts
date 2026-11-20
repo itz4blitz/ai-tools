@@ -1,39 +1,25 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import type { HookContext, HookDefinition, HookEventType } from "../index.js";
 
-const mockExistsSync = vi.hoisted(() => vi.fn(() => false));
-const mockReadFile = vi.hoisted(() => vi.fn());
-
-// Mock the registry to prevent side effects during import
-vi.mock("./index.js", () => {
-  const registry = { register: vi.fn() };
-  abstract class BaseAdapter {
-    abstract readonly id: string;
-    abstract readonly name: string;
-    abstract readonly version: string;
-    abstract readonly capabilities: unknown;
-    abstract detect(): Promise<boolean>;
-    abstract generate(hooks: HookDefinition[]): Promise<unknown[]>;
-    abstract mapEvent(event: string): string[];
-    abstract mapNativeEvent(nativeEvent: string): string[];
-    async install() {}
-    async uninstall() {}
-    protected async commandExists() {
-      return false;
-    }
-    protected async removeFile() {}
-  }
-  return { BaseAdapter, registry };
+vi.mock("./index.js", async () => {
+  const { BaseAdapter } = await import("./base.js");
+  return { BaseAdapter, registry: { register: vi.fn() } };
 });
 
-// Mock fs modules to avoid real filesystem access
-vi.mock("node:fs", () => ({
-  existsSync: mockExistsSync,
-}));
-
-vi.mock("node:fs/promises", () => ({
-  readFile: mockReadFile,
-}));
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return {
+    ...actual,
+    execFile: vi.fn((_cmd: string, _args: string[], cb: (error: Error | null) => void) => {
+      cb(new Error("not found"));
+    }),
+  };
+});
 
 import { DroidAdapter } from "./droid.js";
 
@@ -46,6 +32,8 @@ function makeHandler() {
 
 describe("DroidAdapter", () => {
   let adapter: DroidAdapter;
+  let tmp: string;
+  let previousCwd: string;
 
   const testHook: HookDefinition = {
     id: "test",
@@ -55,411 +43,80 @@ describe("DroidAdapter", () => {
     handler: makeHandler(),
   };
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    tmp = await mkdtemp(join(tmpdir(), "ai-tools-droid-hooks-"));
+    previousCwd = process.cwd();
+    process.chdir(tmp);
     adapter = new DroidAdapter();
-    mockExistsSync.mockReturnValue(false);
-    mockReadFile.mockReset();
   });
 
-  // ── Metadata / Capabilities ────────────────────────────────
+  afterEach(async () => {
+    process.chdir(previousCwd);
+    await rm(tmp, { recursive: true, force: true });
+  });
 
-  describe("metadata", () => {
-    it("has correct id", () => {
+  describe("metadata & capabilities", () => {
+    it("has correct metadata", () => {
       expect(adapter.id).toBe("droid");
-    });
-
-    it("has correct name", () => {
       expect(adapter.name).toBe("Factory Droid");
-    });
-
-    it("has correct version", () => {
       expect(adapter.version).toBe("1.0");
     });
-  });
 
-  describe("capabilities", () => {
-    it("supports before hooks", () => {
-      expect(adapter.capabilities.beforeHooks).toBe(true);
-    });
-
-    it("supports after hooks", () => {
-      expect(adapter.capabilities.afterHooks).toBe(true);
-    });
-
-    it("supports MCP", () => {
-      expect(adapter.capabilities.mcp).toBe(true);
-    });
-
-    it("supports config file generation", () => {
-      expect(adapter.capabilities.configFile).toBe(true);
-    });
-
-    it("lists all supported events", () => {
-      const expected: HookEventType[] = [
-        "session:start",
-        "session:end",
-        "prompt:submit",
-        "prompt:response",
-        "tool:before",
-        "tool:after",
-        "file:read",
-        "file:write",
-        "file:edit",
-        "file:delete",
-        "shell:before",
-        "shell:after",
-        "mcp:before",
-        "mcp:after",
-        "notification",
-      ];
-      expect(adapter.capabilities.supportedEvents).toEqual(expected);
-    });
-
-    it("lists all blockable events", () => {
-      const expected: HookEventType[] = [
-        "tool:before",
-        "file:read",
-        "file:write",
-        "file:edit",
-        "file:delete",
-        "shell:before",
-        "mcp:before",
-      ];
-      expect(adapter.capabilities.blockableEvents).toEqual(expected);
-    });
-
-    it("blockable events are a subset of supported events", () => {
+    it("includes prompt:submit and prompt:response in blockableEvents", () => {
+      expect(adapter.capabilities.blockableEvents).toContain("prompt:submit");
+      expect(adapter.capabilities.blockableEvents).toContain("prompt:response");
       for (const event of adapter.capabilities.blockableEvents) {
         expect(adapter.capabilities.supportedEvents).toContain(event);
       }
     });
   });
 
-  // ── mapEvent ───────────────────────────────────────────────
-
-  describe("mapEvent", () => {
-    it("maps session:start to SessionStart", () => {
+  describe("event mapping", () => {
+    it("maps universal events to Factory Droid native events", () => {
       expect(adapter.mapEvent("session:start")).toEqual(["SessionStart"]);
-    });
-
-    it("maps session:end to SessionEnd", () => {
       expect(adapter.mapEvent("session:end")).toEqual(["SessionEnd"]);
-    });
-
-    it("maps prompt:submit to UserPromptSubmit", () => {
       expect(adapter.mapEvent("prompt:submit")).toEqual(["UserPromptSubmit"]);
-    });
-
-    it("maps prompt:response to Stop", () => {
       expect(adapter.mapEvent("prompt:response")).toEqual(["Stop"]);
-    });
-
-    it("maps tool:before to PreToolUse", () => {
-      expect(adapter.mapEvent("tool:before")).toEqual(["PreToolUse"]);
-    });
-
-    it("maps tool:after to PostToolUse", () => {
-      expect(adapter.mapEvent("tool:after")).toEqual(["PostToolUse"]);
-    });
-
-    it("maps file:read to PreToolUse", () => {
-      expect(adapter.mapEvent("file:read")).toEqual(["PreToolUse"]);
-    });
-
-    it("maps file:write to PreToolUse", () => {
-      expect(adapter.mapEvent("file:write")).toEqual(["PreToolUse"]);
-    });
-
-    it("maps file:edit to PreToolUse", () => {
-      expect(adapter.mapEvent("file:edit")).toEqual(["PreToolUse"]);
-    });
-
-    it("maps file:delete to PreToolUse", () => {
-      expect(adapter.mapEvent("file:delete")).toEqual(["PreToolUse"]);
-    });
-
-    it("maps shell:before to PreToolUse", () => {
       expect(adapter.mapEvent("shell:before")).toEqual(["PreToolUse"]);
-    });
-
-    it("maps shell:after to PostToolUse", () => {
       expect(adapter.mapEvent("shell:after")).toEqual(["PostToolUse"]);
-    });
-
-    it("maps mcp:before to PreToolUse", () => {
       expect(adapter.mapEvent("mcp:before")).toEqual(["PreToolUse"]);
-    });
-
-    it("maps mcp:after to PostToolUse", () => {
       expect(adapter.mapEvent("mcp:after")).toEqual(["PostToolUse"]);
-    });
-
-    it("maps notification to Notification", () => {
       expect(adapter.mapEvent("notification")).toEqual(["Notification"]);
-    });
-
-    it("returns empty array for unknown event", () => {
       expect(adapter.mapEvent("unknown:event" as HookEventType)).toEqual([]);
     });
-  });
 
-  // ── mapNativeEvent ─────────────────────────────────────────
-
-  describe("mapNativeEvent", () => {
-    it("maps SessionStart to session:start", () => {
-      expect(adapter.mapNativeEvent("SessionStart")).toEqual(["session:start"]);
-    });
-
-    it("maps SessionEnd to session:end", () => {
-      expect(adapter.mapNativeEvent("SessionEnd")).toEqual(["session:end"]);
-    });
-
-    it("maps UserPromptSubmit to prompt:submit", () => {
-      expect(adapter.mapNativeEvent("UserPromptSubmit")).toEqual(["prompt:submit"]);
-    });
-
-    it("maps Stop to prompt:response", () => {
+    it("maps native events back to universal events", () => {
       expect(adapter.mapNativeEvent("Stop")).toEqual(["prompt:response"]);
-    });
-
-    it("maps PreToolUse to multiple universal events", () => {
-      const result = adapter.mapNativeEvent("PreToolUse");
-      expect(result).toEqual([
-        "tool:before",
-        "file:read",
-        "file:write",
-        "file:edit",
-        "file:delete",
-        "shell:before",
-        "mcp:before",
-      ]);
-    });
-
-    it("maps PostToolUse to multiple universal events", () => {
-      const result = adapter.mapNativeEvent("PostToolUse");
-      expect(result).toEqual(["tool:after", "shell:after", "mcp:after"]);
-    });
-
-    it("maps Notification to notification", () => {
-      expect(adapter.mapNativeEvent("Notification")).toEqual(["notification"]);
-    });
-
-    it("returns empty array for unknown native event", () => {
-      expect(adapter.mapNativeEvent("UnknownNativeEvent")).toEqual([]);
-    });
-
-    it("returns empty array for empty string", () => {
-      expect(adapter.mapNativeEvent("")).toEqual([]);
-    });
-
-    it("returns empty array for SubagentStop (not in reverse map)", () => {
-      expect(adapter.mapNativeEvent("SubagentStop")).toEqual([]);
-    });
-
-    it("returns empty array for PreCompact (not in reverse map)", () => {
-      expect(adapter.mapNativeEvent("PreCompact")).toEqual([]);
+      expect(adapter.mapNativeEvent("UserPromptSubmit")).toEqual(["prompt:submit"]);
+      expect(adapter.mapNativeEvent("PreToolUse")).toContain("mcp:before");
+      expect(adapter.mapNativeEvent("PostToolUse")).toContain("mcp:after");
+      expect(adapter.mapNativeEvent("Unknown")).toEqual([]);
     });
   });
 
-  // ── generate ───────────────────────────────────────────────
-
-  describe("generate", () => {
-    it("returns two config files (runner + settings)", async () => {
-      const configs = await adapter.generate([testHook]);
-      expect(configs).toHaveLength(2);
+  describe("detect", () => {
+    it("accepts optional cwd and detects .factory directory", async () => {
+      const otherDir = await mkdtemp(join(tmpdir(), "ai-tools-droid-detect-"));
+      try {
+        expect(await adapter.detect(otherDir)).toBe(false);
+        await mkdir(join(otherDir, ".factory"));
+        expect(await adapter.detect(otherDir)).toBe(true);
+      } finally {
+        await rm(otherDir, { recursive: true, force: true });
+      }
     });
+  });
 
-    it("generates runner script at correct path", async () => {
+  describe("generate, mergeSettings & uninstall", () => {
+    it("writes runner with JSON.stringify PROJECT_ROOT and quoted command in settings.json", async () => {
       const configs = await adapter.generate([testHook]);
-      const runner = configs.find((c) => c.path.includes("runner"));
-      expect(runner).toBeDefined();
-      expect(runner!.path).toBe(".factory/hooks/ai-tools-hooks-runner.js");
-    });
+      await adapter.install(configs);
 
-    it("runner script has correct format", async () => {
-      const configs = await adapter.generate([testHook]);
-      const runner = configs.find((c) => c.path.includes("runner"));
-      expect(runner!.format).toBe("js");
-    });
+      const runner = await readFile(join(tmp, ".factory/hooks/ai-tools-hooks-runner.js"), "utf-8");
+      expect(runner).toContain(`const PROJECT_ROOT = ${JSON.stringify(resolve(tmp))};`);
 
-    it("runner script contains shebang", async () => {
-      const configs = await adapter.generate([testHook]);
-      const runner = configs.find((c) => c.path.includes("runner"));
-      expect(runner!.content).toContain("#!/usr/bin/env node");
-    });
-
-    it("runner script imports from ai-hooks", async () => {
-      const configs = await adapter.generate([testHook]);
-      const runner = configs.find((c) => c.path.includes("runner"));
-      expect(runner!.content).toContain(
-        'import { loadConfig, HookEngine } from "@itz4blitz/ai-tools-hooks"',
-      );
-    });
-
-    it("runner script reads STDIN for hook data", async () => {
-      const configs = await adapter.generate([testHook]);
-      const runner = configs.find((c) => c.path.includes("runner"));
-      expect(runner!.content).toContain("readStdin");
-      expect(runner!.content).toContain("process.stdin");
-    });
-
-    it("runner script reads hook_event_name from input", async () => {
-      const configs = await adapter.generate([testHook]);
-      const runner = configs.find((c) => c.path.includes("runner"));
-      expect(runner!.content).toContain("hook_event_name");
-    });
-
-    it("runner script reads tool_name from input", async () => {
-      const configs = await adapter.generate([testHook]);
-      const runner = configs.find((c) => c.path.includes("runner"));
-      expect(runner!.content).toContain("tool_name");
-    });
-
-    it("runner script reads tool_input from input", async () => {
-      const configs = await adapter.generate([testHook]);
-      const runner = configs.find((c) => c.path.includes("runner"));
-      expect(runner!.content).toContain("tool_input");
-    });
-
-    it("runner script reads tool_response from input", async () => {
-      const configs = await adapter.generate([testHook]);
-      const runner = configs.find((c) => c.path.includes("runner"));
-      expect(runner!.content).toContain("tool_response");
-    });
-
-    it("runner script handles SessionStart event", async () => {
-      const configs = await adapter.generate([testHook]);
-      const runner = configs.find((c) => c.path.includes("runner"));
-      expect(runner!.content).toContain('"SessionStart"');
-      expect(runner!.content).toContain("session:start");
-    });
-
-    it("runner script handles SessionEnd event", async () => {
-      const configs = await adapter.generate([testHook]);
-      const runner = configs.find((c) => c.path.includes("runner"));
-      expect(runner!.content).toContain('"SessionEnd"');
-      expect(runner!.content).toContain("session:end");
-    });
-
-    it("runner script handles UserPromptSubmit event", async () => {
-      const configs = await adapter.generate([testHook]);
-      const runner = configs.find((c) => c.path.includes("runner"));
-      expect(runner!.content).toContain('"UserPromptSubmit"');
-      expect(runner!.content).toContain("prompt:submit");
-    });
-
-    it("runner script handles Notification event", async () => {
-      const configs = await adapter.generate([testHook]);
-      const runner = configs.find((c) => c.path.includes("runner"));
-      expect(runner!.content).toContain('"Notification"');
-    });
-
-    it("runner script handles Stop event", async () => {
-      const configs = await adapter.generate([testHook]);
-      const runner = configs.find((c) => c.path.includes("runner"));
-      expect(runner!.content).toContain('"Stop"');
-    });
-
-    it("runner script handles PreToolUse with resolvePreToolEvent", async () => {
-      const configs = await adapter.generate([testHook]);
-      const runner = configs.find((c) => c.path.includes("runner"));
-      expect(runner!.content).toContain('"PreToolUse"');
-      expect(runner!.content).toContain("resolvePreToolEvent");
-    });
-
-    it("runner script handles PostToolUse with resolvePostToolEvent", async () => {
-      const configs = await adapter.generate([testHook]);
-      const runner = configs.find((c) => c.path.includes("runner"));
-      expect(runner!.content).toContain('"PostToolUse"');
-      expect(runner!.content).toContain("resolvePostToolEvent");
-    });
-
-    it("runner script handles Write tool name", async () => {
-      const configs = await adapter.generate([testHook]);
-      const runner = configs.find((c) => c.path.includes("runner"));
-      expect(runner!.content).toContain('"Write"');
-    });
-
-    it("runner script handles Edit tool name", async () => {
-      const configs = await adapter.generate([testHook]);
-      const runner = configs.find((c) => c.path.includes("runner"));
-      expect(runner!.content).toContain('"Edit"');
-    });
-
-    it("runner script handles Read tool name", async () => {
-      const configs = await adapter.generate([testHook]);
-      const runner = configs.find((c) => c.path.includes("runner"));
-      expect(runner!.content).toContain('"Read"');
-    });
-
-    it("runner script handles Bash tool name", async () => {
-      const configs = await adapter.generate([testHook]);
-      const runner = configs.find((c) => c.path.includes("runner"));
-      expect(runner!.content).toContain('"Bash"');
-    });
-
-    it("runner script handles blocking with exit code 2", async () => {
-      const configs = await adapter.generate([testHook]);
-      const runner = configs.find((c) => c.path.includes("runner"));
-      expect(runner!.content).toContain("process.exit(2)");
-    });
-
-    it("runner script writes blocked reason to stderr", async () => {
-      const configs = await adapter.generate([testHook]);
-      const runner = configs.find((c) => c.path.includes("runner"));
-      expect(runner!.content).toContain("process.stderr.write");
-      expect(runner!.content).toContain("Blocked by ai-hooks");
-    });
-
-    it("runner script exits with code 0 for unknown events", async () => {
-      const configs = await adapter.generate([testHook]);
-      const runner = configs.find((c) => c.path.includes("runner"));
-      expect(runner!.content).toContain("process.exit(0)");
-    });
-
-    it("runner script handles errors with exit code 1", async () => {
-      const configs = await adapter.generate([testHook]);
-      const runner = configs.find((c) => c.path.includes("runner"));
-      expect(runner!.content).toContain("process.exit(1)");
-    });
-
-    it("runner script contains DO NOT EDIT warning", async () => {
-      const configs = await adapter.generate([testHook]);
-      const runner = configs.find((c) => c.path.includes("runner"));
-      expect(runner!.content).toContain("DO NOT EDIT");
-    });
-
-    it("runner script reads session_id from input", async () => {
-      const configs = await adapter.generate([testHook]);
-      const runner = configs.find((c) => c.path.includes("runner"));
-      expect(runner!.content).toContain("session_id");
-    });
-
-    it("generates settings.json at correct path", async () => {
-      const configs = await adapter.generate([testHook]);
-      const settings = configs.find((c) => c.path.includes("settings"));
-      expect(settings).toBeDefined();
-      expect(settings!.path).toBe(".factory/settings.json");
-    });
-
-    it("settings has correct format", async () => {
-      const configs = await adapter.generate([testHook]);
-      const settings = configs.find((c) => c.path.includes("settings"));
-      expect(settings!.format).toBe("json");
-    });
-
-    it("settings contains valid JSON", async () => {
-      const configs = await adapter.generate([testHook]);
-      const settings = configs.find((c) => c.path.includes("settings"));
-      const parsed = JSON.parse(settings!.content) as Record<string, unknown>;
-      expect(parsed).toBeDefined();
-      expect(parsed.hooks).toBeDefined();
-    });
-
-    it("settings contains PreToolUse hook entry for shell:before event", async () => {
-      const configs = await adapter.generate([testHook]);
-      const settings = configs.find((c) => c.path.includes("settings"));
-      const parsed = JSON.parse(settings!.content) as {
+      const settings = JSON.parse(await readFile(join(tmp, ".factory/settings.json"), "utf-8")) as {
         hooks: Record<
           string,
           Array<{
@@ -468,318 +125,312 @@ describe("DroidAdapter", () => {
           }>
         >;
       };
-      const preToolUseEntries = parsed.hooks.PreToolUse;
-      expect(preToolUseEntries).toBeDefined();
-      expect(preToolUseEntries).toHaveLength(1);
-      const entry = preToolUseEntries![0]!;
-      expect(entry.matcher).toBe("*");
-      expect(entry.hooks).toHaveLength(1);
-      expect(entry.hooks[0]!.type).toBe("command");
-      expect(entry.hooks[0]!.command).toContain("ai-tools-hooks-runner.js");
-      expect(entry.hooks[0]!.timeout).toBe(30);
+      const expectedCmd = `node ${JSON.stringify(resolve(tmp, ".factory/hooks/ai-tools-hooks-runner.js"))}`;
+      expect(settings.hooks.PreToolUse?.[0]?.matcher).toBe("*");
+      expect(settings.hooks.PreToolUse?.[0]?.hooks[0]?.command).toBe(expectedCmd);
     });
 
-    it("PreToolUse and PostToolUse entries have matcher: *", async () => {
-      const multiHook: HookDefinition = {
-        id: "multi",
-        name: "Multi Hook",
-        events: ["tool:before", "tool:after"],
-        phase: "before",
-        handler: makeHandler(),
+    it("prunes stale ai-tools entries across all event keys while preserving user settings and hooks", async () => {
+      await mkdir(join(tmp, ".factory"), { recursive: true });
+      await writeFile(
+        join(tmp, ".factory/settings.json"),
+        JSON.stringify({
+          model: "claude-sonnet-4",
+          hooks: {
+            Notification: [
+              { hooks: [{ type: "command", command: "node /old/ai-tools-hooks-runner.js" }] },
+            ],
+            Stop: [
+              { hooks: [{ type: "command", command: "echo user-stop-hook" }] },
+              { hooks: [{ type: "command", command: "node /legacy/ai-hooks-runner.js" }] },
+            ],
+          },
+        }),
+        "utf-8",
+      );
+
+      await adapter.install(await adapter.generate([testHook]));
+
+      const settings = JSON.parse(await readFile(join(tmp, ".factory/settings.json"), "utf-8")) as {
+        model: string;
+        hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
       };
-      const configs = await adapter.generate([multiHook]);
-      const settings = configs.find((c) => c.path.includes("settings"));
-      const parsed = JSON.parse(settings!.content) as {
-        hooks: Record<string, Array<{ matcher?: string }>>;
-      };
-      expect(parsed.hooks.PreToolUse![0]!.matcher).toBe("*");
-      expect(parsed.hooks.PostToolUse![0]!.matcher).toBe("*");
+
+      expect(settings.model).toBe("claude-sonnet-4");
+      expect(settings.hooks.Notification).toBeUndefined();
+      expect(settings.hooks.Stop).toHaveLength(1);
+      expect(settings.hooks.Stop?.[0]?.hooks[0]?.command).toBe("echo user-stop-hook");
+      expect(settings.hooks.PreToolUse).toHaveLength(1);
     });
 
-    it("non-tool events do not have matcher", async () => {
-      const sessionHook: HookDefinition = {
-        id: "session",
-        name: "Session Hook",
-        events: ["session:start"],
-        phase: "before",
-        handler: makeHandler(),
-      };
-      const configs = await adapter.generate([sessionHook]);
-      const settings = configs.find((c) => c.path.includes("settings"));
-      const parsed = JSON.parse(settings!.content) as {
-        hooks: Record<string, Array<{ matcher?: string }>>;
-      };
-      expect(parsed.hooks.SessionStart![0]!.matcher).toBeUndefined();
-    });
+    it("handles corrupted existing settings.json gracefully without throwing", async () => {
+      await mkdir(join(tmp, ".factory"), { recursive: true });
+      await writeFile(join(tmp, ".factory/settings.json"), "{not-valid-json", "utf-8");
 
-    it("maps multiple hook events to correct native events", async () => {
-      const multiHook: HookDefinition = {
-        id: "multi",
-        name: "Multi Hook",
-        events: ["session:start", "tool:after", "notification"],
-        phase: "after",
-        handler: makeHandler(),
-      };
-      const configs = await adapter.generate([multiHook]);
-      const settings = configs.find((c) => c.path.includes("settings"));
-      const parsed = JSON.parse(settings!.content) as {
+      const configs = await adapter.generate([testHook]);
+      await adapter.install(configs);
+
+      const settings = JSON.parse(await readFile(join(tmp, ".factory/settings.json"), "utf-8")) as {
         hooks: Record<string, unknown[]>;
       };
-      expect(parsed.hooks.SessionStart).toBeDefined();
-      expect(parsed.hooks.PostToolUse).toBeDefined();
-      expect(parsed.hooks.Notification).toBeDefined();
+      expect(settings.hooks.PreToolUse).toHaveLength(1);
     });
 
-    it("deduplicates native events from multiple hooks mapping to same native event", async () => {
-      const hooks: HookDefinition[] = [
-        {
-          id: "hook1",
-          name: "Hook 1",
-          events: ["tool:before"],
-          phase: "before",
-          handler: makeHandler(),
-        },
-        {
-          id: "hook2",
-          name: "Hook 2",
-          events: ["file:write"],
-          phase: "before",
-          handler: makeHandler(),
-        },
-      ];
-      const configs = await adapter.generate(hooks);
-      const settings = configs.find((c) => c.path.includes("settings"));
-      const parsed = JSON.parse(settings!.content) as {
-        hooks: Record<string, unknown[]>;
-      };
-      // Both map to PreToolUse, should only have one entry
-      expect(parsed.hooks.PreToolUse).toHaveLength(1);
-    });
+    it("uninstall strips ai-tools entries from settings.json before removing runner scripts", async () => {
+      await mkdir(join(tmp, ".factory/hooks"), { recursive: true });
+      await writeFile(join(tmp, ".factory/hooks/ai-hooks-runner.js"), "// legacy", "utf-8");
+      await writeFile(
+        join(tmp, ".factory/settings.json"),
+        JSON.stringify({
+          theme: "dark",
+          hooks: {
+            SessionStart: [{ hooks: [{ type: "command", command: "echo keep-me" }] }],
+          },
+        }),
+        "utf-8",
+      );
 
-    it("returns empty hooks config for hooks with no native event mappings", async () => {
-      const unmappedHook: HookDefinition = {
-        id: "unmapped",
-        name: "Unmapped Hook",
-        events: ["unknown:thing" as HookEventType],
-        phase: "after",
-        handler: makeHandler(),
-      };
-      const configs = await adapter.generate([unmappedHook]);
-      const settings = configs.find((c) => c.path.includes("settings"));
-      const parsed = JSON.parse(settings!.content) as {
-        hooks: Record<string, unknown[]>;
-      };
-      expect(Object.keys(parsed.hooks)).toHaveLength(0);
-    });
-
-    it("generates config for empty hooks array", async () => {
-      const configs = await adapter.generate([]);
-      expect(configs).toHaveLength(2);
-      const settings = configs.find((c) => c.path.includes("settings"));
-      const parsed = JSON.parse(settings!.content) as {
-        hooks: Record<string, unknown[]>;
-      };
-      expect(Object.keys(parsed.hooks)).toHaveLength(0);
-    });
-
-    it("generates all Droid native events for comprehensive hook set", async () => {
-      const hook: HookDefinition = {
-        id: "all",
-        name: "All Events",
-        events: [
-          "session:start",
-          "session:end",
-          "prompt:submit",
-          "prompt:response",
-          "notification",
-        ],
-        phase: "before",
-        handler: makeHandler(),
-      };
-      const configs = await adapter.generate([hook]);
-      const settings = configs.find((c) => c.path.includes("settings"));
-      const parsed = JSON.parse(settings!.content) as {
-        hooks: Record<string, unknown[]>;
-      };
-      expect(parsed.hooks.SessionStart).toBeDefined();
-      expect(parsed.hooks.SessionEnd).toBeDefined();
-      expect(parsed.hooks.UserPromptSubmit).toBeDefined();
-      expect(parsed.hooks.Stop).toBeDefined();
-      expect(parsed.hooks.Notification).toBeDefined();
-    });
-
-    // ── mergeSettings ─────────────────────────────────────────
-
-    describe("mergeSettings", () => {
-      it("creates new settings when no existing settings.json", async () => {
-        mockExistsSync.mockReturnValue(false);
-        const configs = await adapter.generate([testHook]);
-        const settings = configs.find((c) => c.path.includes("settings"));
-        const parsed = JSON.parse(settings!.content) as Record<string, unknown>;
-        expect(parsed.hooks).toBeDefined();
-      });
-
-      it("merges with existing settings preserving non-hooks fields", async () => {
-        mockExistsSync.mockReturnValue(true);
-        mockReadFile.mockResolvedValue(
-          JSON.stringify({
-            model: "claude-3.5-sonnet",
-            permissions: { allow: ["read"] },
-            hooks: {},
-          }),
-        );
-        const configs = await adapter.generate([testHook]);
-        const settings = configs.find((c) => c.path.includes("settings"));
-        const parsed = JSON.parse(settings!.content) as Record<string, unknown>;
-        expect(parsed.model).toBe("claude-3.5-sonnet");
-        expect(parsed.permissions).toEqual({ allow: ["read"] });
-        expect(parsed.hooks).toBeDefined();
-      });
-
-      it("preserves existing non-ai-hooks hook entries", async () => {
-        mockExistsSync.mockReturnValue(true);
-        mockReadFile.mockResolvedValue(
-          JSON.stringify({
-            hooks: {
-              PreToolUse: [
-                {
-                  hooks: [
-                    {
-                      type: "command",
-                      command: "some-other-tool",
-                      timeout: 5,
-                    },
-                  ],
-                },
-              ],
-            },
-          }),
-        );
-        const configs = await adapter.generate([testHook]);
-        const settings = configs.find((c) => c.path.includes("settings"));
-        const parsed = JSON.parse(settings!.content) as {
-          hooks: Record<
-            string,
-            Array<{
-              hooks: Array<{ command: string }>;
-            }>
-          >;
-        };
-        // Should have 2 entries: the existing other-tool + the new ai-hooks
-        expect(parsed.hooks.PreToolUse).toHaveLength(2);
-        expect(parsed.hooks.PreToolUse![0]!.hooks[0]!.command).toBe("some-other-tool");
-        expect(parsed.hooks.PreToolUse![1]!.hooks[0]!.command).toContain(
-          "ai-tools-hooks-runner.js",
-        );
-      });
-
-      it("removes old ai-hooks entries before adding new ones", async () => {
-        mockExistsSync.mockReturnValue(true);
-        mockReadFile.mockResolvedValue(
-          JSON.stringify({
-            hooks: {
-              PreToolUse: [
-                {
-                  hooks: [
-                    {
-                      type: "command",
-                      command: "node /old/path/ai-tools-hooks-runner.js",
-                      timeout: 30,
-                    },
-                  ],
-                },
-              ],
-            },
-          }),
-        );
-        const configs = await adapter.generate([testHook]);
-        const settings = configs.find((c) => c.path.includes("settings"));
-        const parsed = JSON.parse(settings!.content) as {
-          hooks: Record<
-            string,
-            Array<{
-              hooks: Array<{ command: string }>;
-            }>
-          >;
-        };
-        // Old ai-hooks entry should be replaced, not duplicated
-        expect(parsed.hooks.PreToolUse).toHaveLength(1);
-        expect(parsed.hooks.PreToolUse![0]!.hooks[0]!.command).toContain(
-          "ai-tools-hooks-runner.js",
-        );
-      });
-
-      it("handles existing settings with no hooks field", async () => {
-        mockExistsSync.mockReturnValue(true);
-        mockReadFile.mockResolvedValue(
-          JSON.stringify({
-            model: "claude-3.5-sonnet",
-          }),
-        );
-        const configs = await adapter.generate([testHook]);
-        const settings = configs.find((c) => c.path.includes("settings"));
-        const parsed = JSON.parse(settings!.content) as {
-          hooks: Record<string, unknown[]>;
-        };
-        expect(parsed.hooks.PreToolUse).toBeDefined();
-      });
-
-      it("handles existing settings with hooks for different events", async () => {
-        mockExistsSync.mockReturnValue(true);
-        mockReadFile.mockResolvedValue(
-          JSON.stringify({
-            hooks: {
-              SessionStart: [
-                {
-                  hooks: [
-                    {
-                      type: "command",
-                      command: "echo hello",
-                      timeout: 5,
-                    },
-                  ],
-                },
-              ],
-            },
-          }),
-        );
-        const configs = await adapter.generate([testHook]);
-        const settings = configs.find((c) => c.path.includes("settings"));
-        const parsed = JSON.parse(settings!.content) as {
-          hooks: Record<string, unknown[]>;
-        };
-        // Existing SessionStart should be preserved
-        expect(parsed.hooks.SessionStart).toBeDefined();
-        expect(parsed.hooks.SessionStart).toHaveLength(1);
-        // New PreToolUse should be added
-        expect(parsed.hooks.PreToolUse).toBeDefined();
-        expect(parsed.hooks.PreToolUse).toHaveLength(1);
-      });
-    });
-  });
-
-  // ── detect ──────────────────────────────────────────────────
-
-  describe("detect", () => {
-    it("returns false when command does not exist and no .factory dir", async () => {
-      mockExistsSync.mockReturnValue(false);
-      const result = await adapter.detect();
-      expect(result).toBe(false);
-    });
-
-    it("returns true when .factory directory exists", async () => {
-      mockExistsSync.mockReturnValue(true);
-      const result = await adapter.detect();
-      expect(result).toBe(true);
-    });
-  });
-
-  // ── uninstall ───────────────────────────────────────────────
-
-  describe("uninstall", () => {
-    it("calls removeFile for runner script", async () => {
+      await adapter.install(await adapter.generate([testHook]));
       await adapter.uninstall();
-      // uninstall runs without error (removeFile is a no-op mock)
+
+      expect(existsSync(join(tmp, ".factory/hooks/ai-tools-hooks-runner.js"))).toBe(false);
+      expect(existsSync(join(tmp, ".factory/hooks/ai-hooks-runner.js"))).toBe(false);
+
+      const settings = JSON.parse(await readFile(join(tmp, ".factory/settings.json"), "utf-8")) as {
+        theme: string;
+        hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+      };
+      expect(settings.theme).toBe("dark");
+      expect(settings.hooks.PreToolUse).toBeUndefined();
+      expect(settings.hooks.SessionStart).toHaveLength(1);
+      expect(settings.hooks.SessionStart?.[0]?.hooks[0]?.command).toBe("echo keep-me");
+    });
+  });
+
+  describe("runner execution", () => {
+    async function setupRunnerMock(blockReason?: string): Promise<{
+      runnerPath: string;
+      outputFile: string;
+    }> {
+      await adapter.install(await adapter.generate([testHook]));
+      await writeFile(
+        join(tmp, "package.json"),
+        JSON.stringify({ name: "droid-hook-test", type: "module" }),
+        "utf-8",
+      );
+      const outputFile = join(tmp, "emitted-event.json");
+      const mockPkgDir = join(tmp, "node_modules", "@itz4blitz", "ai-tools-hooks");
+      await mkdir(mockPkgDir, { recursive: true });
+      await writeFile(
+        join(mockPkgDir, "package.json"),
+        JSON.stringify({ name: "@itz4blitz/ai-tools-hooks", type: "module", main: "index.js" }),
+        "utf-8",
+      );
+      await writeFile(
+        join(mockPkgDir, "index.js"),
+        `import { writeFileSync } from "node:fs";
+export async function loadConfig() { return {}; }
+export class HookEngine {
+  async emit(event, toolInfo) {
+    writeFileSync(${JSON.stringify(outputFile)}, JSON.stringify({ event, toolInfo }), "utf-8");
+    return ${blockReason ? JSON.stringify([{ blocked: true, reason: blockReason }]) : "[]"};
+  }
+}
+`,
+        "utf-8",
+      );
+      return {
+        runnerPath: join(tmp, ".factory/hooks/ai-tools-hooks-runner.js"),
+        outputFile,
+      };
+    }
+
+    function runRunner(runnerPath: string, payload: Record<string, unknown>) {
+      return spawnSync(process.execPath, [runnerPath], {
+        cwd: tmp,
+        input: JSON.stringify(payload),
+        encoding: "utf-8",
+      });
+    }
+
+    it("maps Execute, Create, MultiEdit, ApplyPatch, Read, and mcp:* native Droid tools", async () => {
+      const { runnerPath, outputFile } = await setupRunnerMock();
+
+      // Execute -> shell:before with input.cwd
+      let res = runRunner(runnerPath, {
+        hook_event_name: "PreToolUse",
+        sessionId: "sess-camel",
+        cwd: "/repo/subdir",
+        tool_name: "Execute",
+        tool_input: { command: "npm test" },
+      });
+      expect(res.status, res.stderr).toBe(0);
+      let recorded = JSON.parse(await readFile(outputFile, "utf-8")) as {
+        event: Record<string, unknown>;
+      };
+      expect(recorded.event).toMatchObject({
+        type: "shell:before",
+        command: "npm test",
+        cwd: "/repo/subdir",
+        metadata: { sessionId: "sess-camel" },
+      });
+
+      // Execute PostToolUse -> shell:after with input.cwd
+      res = runRunner(runnerPath, {
+        hook_event_name: "PostToolUse",
+        cwd: "/repo/subdir",
+        tool_name: "Execute",
+        tool_input: { command: "npm test" },
+        tool_response: { exitCode: 0, stdout: "ok", stderr: "" },
+      });
+      expect(res.status).toBe(0);
+      recorded = JSON.parse(await readFile(outputFile, "utf-8")) as {
+        event: Record<string, unknown>;
+      };
+      expect(recorded.event).toMatchObject({
+        type: "shell:after",
+        command: "npm test",
+        cwd: "/repo/subdir",
+        exitCode: 0,
+        stdout: "ok",
+      });
+
+      // Create -> file:write
+      res = runRunner(runnerPath, {
+        hook_event_name: "PreToolUse",
+        tool_name: "Create",
+        tool_input: { file_path: "src/new.ts", content: "export const x = 1;" },
+      });
+      expect(res.status).toBe(0);
+      recorded = JSON.parse(await readFile(outputFile, "utf-8")) as {
+        event: Record<string, unknown>;
+      };
+      expect(recorded.event).toMatchObject({
+        type: "file:write",
+        path: "src/new.ts",
+        content: "export const x = 1;",
+      });
+
+      // MultiEdit -> file:edit
+      res = runRunner(runnerPath, {
+        hook_event_name: "PreToolUse",
+        tool_name: "MultiEdit",
+        tool_input: { file_path: "src/app.ts", old_string: "a", new_string: "b" },
+      });
+      expect(res.status).toBe(0);
+      recorded = JSON.parse(await readFile(outputFile, "utf-8")) as {
+        event: Record<string, unknown>;
+      };
+      expect(recorded.event).toMatchObject({
+        type: "file:edit",
+        path: "src/app.ts",
+        oldContent: "a",
+        newContent: "b",
+      });
+
+      // ApplyPatch -> file:edit
+      res = runRunner(runnerPath, {
+        hook_event_name: "PreToolUse",
+        tool_name: "ApplyPatch",
+        tool_input: { path: "src/patch.ts", patch: "+export const y = 2;" },
+      });
+      expect(res.status, res.stderr).toBe(0);
+      recorded = JSON.parse(await readFile(outputFile, "utf-8")) as {
+        event: Record<string, unknown>;
+      };
+      expect(recorded.event).toMatchObject({
+        type: "file:edit",
+        path: "src/patch.ts",
+        newContent: "+export const y = 2;",
+      });
+
+      // Read -> file:read
+      res = runRunner(runnerPath, {
+        hook_event_name: "PreToolUse",
+        tool_name: "Read",
+        tool_input: { file_path: "README.md" },
+      });
+      expect(res.status, res.stderr).toBe(0);
+      recorded = JSON.parse(await readFile(outputFile, "utf-8")) as {
+        event: Record<string, unknown>;
+      };
+      expect(recorded.event).toMatchObject({
+        type: "file:read",
+        path: "README.md",
+      });
+
+      // mcp:* -> mcp:before
+      res = runRunner(runnerPath, {
+        hook_event_name: "PreToolUse",
+        tool_name: "mcp:linear:list_issues",
+        tool_input: { team: "ENG" },
+      });
+      expect(res.status).toBe(0);
+      recorded = JSON.parse(await readFile(outputFile, "utf-8")) as {
+        event: Record<string, unknown>;
+      };
+      expect(recorded.event).toMatchObject({
+        type: "mcp:before",
+        server: "linear",
+        method: "list_issues",
+        params: { team: "ENG" },
+      });
+    });
+
+    it("maps Stop to prompt:response and reads top-level prompt & message fields", async () => {
+      const { runnerPath, outputFile } = await setupRunnerMock();
+
+      let res = runRunner(runnerPath, {
+        hook_event_name: "Stop",
+        session_id: "sess-1",
+        last_assistant_message: "All done!",
+      });
+      expect(res.status).toBe(0);
+      let recorded = JSON.parse(await readFile(outputFile, "utf-8")) as {
+        event: Record<string, unknown>;
+      };
+      expect(recorded.event).toMatchObject({
+        type: "prompt:response",
+        response: "All done!",
+        metadata: { sessionId: "sess-1" },
+      });
+
+      res = runRunner(runnerPath, {
+        hook_event_name: "UserPromptSubmit",
+        prompt: "Refactor auth",
+      });
+      expect(res.status).toBe(0);
+      recorded = JSON.parse(await readFile(outputFile, "utf-8")) as {
+        event: Record<string, unknown>;
+      };
+      expect(recorded.event).toMatchObject({
+        type: "prompt:submit",
+        prompt: "Refactor auth",
+      });
+
+      res = runRunner(runnerPath, {
+        hook_event_name: "Notification",
+        message: "Build succeeded",
+      });
+      expect(res.status).toBe(0);
+      recorded = JSON.parse(await readFile(outputFile, "utf-8")) as {
+        event: Record<string, unknown>;
+      };
+      expect(recorded.event).toMatchObject({
+        type: "notification",
+        message: "Build succeeded",
+      });
+    });
+
+    it("exits with code 2 and writes block reason to stderr when blocked", async () => {
+      const { runnerPath } = await setupRunnerMock("Dangerous command blocked");
+      const res = runRunner(runnerPath, {
+        hook_event_name: "PreToolUse",
+        tool_name: "Execute",
+        tool_input: { command: "rm -rf /" },
+      });
+      expect(res.status).toBe(2);
+      expect(res.stderr).toContain("Dangerous command blocked");
     });
   });
 });

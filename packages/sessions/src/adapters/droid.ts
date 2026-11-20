@@ -1,51 +1,94 @@
 import { BaseSessionAdapter } from "./base.js";
 import { registry } from "./registry.js";
 import { parseJsonl } from "../utils/parser-helpers.js";
-import type { UnifiedSession, SessionMessage, SessionFilter } from "../types/index.js";
+import type { SessionFilter, SessionMessage, UnifiedSession } from "../types/index.js";
 
-type DroidMessage = {
-  role?: string;
+type ContentPart = {
   type?: string;
-  content?: string;
+  text?: string;
+};
+
+type DroidJsonlEntry = {
+  type?: string;
+  id?: string;
+  title?: string;
+  cwd?: string;
+  role?: string;
+  content?: string | ContentPart[];
   text?: string;
   timestamp?: string;
+  message?: {
+    role?: string;
+    content?: string | ContentPart[];
+    timestamp?: string;
+  };
 };
 
 class DroidSessionAdapter extends BaseSessionAdapter {
   readonly id = "droid";
   readonly name = "Factory Droid";
   readonly command = "droid";
-  readonly storagePaths = ["~/.factory"];
+  readonly storagePaths = ["~/.factory/sessions", "~/.factory/projects"];
 
   async parseSessions(filter?: SessionFilter): Promise<UnifiedSession[]> {
-    const storagePath = await this.getStoragePath();
-    if (!storagePath) return [];
-
+    const { existsSync } = await import("node:fs");
     const { readdir, readFile, stat } = await import("node:fs/promises");
+    const { homedir } = await import("node:os");
     const { resolve } = await import("node:path");
 
+    const roots = this.storagePaths
+      .map((p) => p.replace("~", homedir()))
+      .filter((p) => existsSync(p));
+
+    if (roots.length === 0) return [];
+
     const sessions: UnifiedSession[] = [];
+    const seenIds = new Set<string>();
 
-    let files: string[];
-    try {
-      files = await readdir(storagePath);
-    } catch {
-      return [];
-    }
-
-    for (const file of files) {
-      if (!file.endsWith(".jsonl")) continue;
-      const filePath = resolve(storagePath, file);
-
+    const collectFile = async (filePath: string, fileName: string, projectDir?: string) => {
       try {
         const content = await readFile(filePath, "utf-8");
-        const entries = parseJsonl<DroidMessage>(content);
+        const entries = parseJsonl<DroidJsonlEntry>(content);
 
+        let explicitId: string | undefined;
+        let explicitTitle: string | undefined;
+        let explicitCwd: string | undefined;
         const messages: SessionMessage[] = [];
+
         for (const entry of entries) {
-          const role = this.mapRole(entry);
+          if (entry.type === "session_start") {
+            if (typeof entry.id === "string" && entry.id.trim()) {
+              explicitId = entry.id.trim();
+            }
+            if (typeof entry.title === "string" && entry.title.trim()) {
+              explicitTitle = entry.title.trim();
+            }
+            if (typeof entry.cwd === "string" && entry.cwd.trim()) {
+              explicitCwd = entry.cwd.trim();
+            }
+            continue;
+          }
+
+          if (entry.type === "message" && entry.message) {
+            const role = this.mapRole(entry.message.role);
+            if (!role) continue;
+            const text = this.extractContent(entry.message.content);
+            if (text) {
+              messages.push({
+                role,
+                content: text,
+                timestamp: entry.timestamp ?? entry.message.timestamp,
+              });
+            }
+            continue;
+          }
+
+          // Fallback for flat entries
+          const role = this.mapRole(entry.role ?? entry.type);
           if (!role) continue;
-          const text = entry.content ?? entry.text;
+          const text =
+            this.extractContent(entry.content) ??
+            (typeof entry.text === "string" ? entry.text : null);
           if (text) {
             messages.push({
               role,
@@ -55,17 +98,23 @@ class DroidSessionAdapter extends BaseSessionAdapter {
           }
         }
 
-        if (messages.length === 0) continue;
+        if (messages.length === 0) return;
 
         const fileStat = await stat(filePath);
-        const sessionId = `droid-${file.replace(".jsonl", "")}`;
-        const title = this.resolveSessionTitle(undefined, messages);
+        const rawId = explicitId ?? fileName.replace(/\.jsonl$/, "");
+        const sessionId = rawId.startsWith("droid-") ? rawId : `droid-${rawId}`;
+        if (seenIds.has(sessionId)) return;
+        seenIds.add(sessionId);
+
+        const title = this.resolveSessionTitle(explicitTitle, messages);
+        const projectPath = explicitCwd ?? projectDir;
 
         sessions.push({
           id: sessionId,
           tool: this.id,
           toolName: this.name,
           title,
+          ...(projectPath ? { projectPath } : {}),
           startedAt: fileStat.birthtime.toISOString(),
           updatedAt: fileStat.mtime.toISOString(),
           messageCount: messages.length,
@@ -73,6 +122,33 @@ class DroidSessionAdapter extends BaseSessionAdapter {
         });
       } catch {
         // Skip malformed files
+      }
+    };
+
+    for (const storageRoot of roots) {
+      let entries;
+      try {
+        entries = await readdir(storageRoot, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+
+      for (const entry of entries) {
+        const entryPath = resolve(storageRoot, entry.name);
+        if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+          await collectFile(entryPath, entry.name);
+        } else if (entry.isDirectory()) {
+          let subEntries;
+          try {
+            subEntries = await readdir(entryPath, { withFileTypes: true });
+          } catch {
+            continue;
+          }
+          for (const subEntry of subEntries) {
+            if (!subEntry.isFile() || !subEntry.name.endsWith(".jsonl")) continue;
+            await collectFile(resolve(entryPath, subEntry.name), subEntry.name, entry.name);
+          }
+        }
       }
     }
 
@@ -86,8 +162,7 @@ class DroidSessionAdapter extends BaseSessionAdapter {
     return sessions;
   }
 
-  private mapRole(entry: DroidMessage): SessionMessage["role"] | null {
-    const role = entry.role ?? entry.type;
+  private mapRole(role?: string): SessionMessage["role"] | null {
     switch (role) {
       case "user":
       case "human":
@@ -97,10 +172,29 @@ class DroidSessionAdapter extends BaseSessionAdapter {
       case "system":
         return "system";
       case "tool":
+      case "tool_result":
         return "tool";
       default:
         return null;
     }
+  }
+
+  private extractContent(content?: string | ContentPart[]): string | null {
+    if (typeof content === "string") {
+      return content.length > 0 ? content : null;
+    }
+
+    if (Array.isArray(content)) {
+      const textParts = content
+        .filter(
+          (part) =>
+            part && part.type === "text" && typeof part.text === "string" && part.text.length > 0,
+        )
+        .map((part) => part.text ?? "");
+      return textParts.length > 0 ? textParts.join("\n") : null;
+    }
+
+    return null;
   }
 }
 
