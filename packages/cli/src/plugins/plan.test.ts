@@ -2,27 +2,27 @@ import { describe, expect, it, vi } from "vitest";
 
 const mockRegistries = {
   mcp: {
-    list: () => ["cursor", "codex", "claude-desktop", "opencode", "claude-code"],
+    list: () => ["cursor", "codex", "claude-desktop", "opencode", "claude-code", "continue"],
     get: () => undefined,
     detectAll: async () => [{ id: "cursor" }, { id: "codex" }, { id: "claude-desktop" }],
   },
   skills: {
-    list: () => ["cursor", "codex", "opencode", "claude-code"],
+    list: () => ["cursor", "codex", "opencode", "claude-code", "continue"],
     get: () => undefined,
     detectAll: async () => [{ id: "cursor" }, { id: "codex" }],
   },
   rules: {
-    list: () => ["cursor", "codex", "opencode", "claude-code"],
+    list: () => ["cursor", "codex", "opencode", "claude-code", "continue"],
     get: () => undefined,
     detectAll: async () => [{ id: "cursor" }, { id: "codex" }],
   },
   agents: {
-    list: () => ["cursor", "codex", "opencode", "claude-code"],
+    list: () => ["cursor", "codex", "opencode", "claude-code", "continue"],
     get: () => undefined,
     detectAll: async () => [{ id: "cursor" }, { id: "codex" }],
   },
   hooks: {
-    list: () => ["cursor", "codex", "opencode", "claude-code"],
+    list: () => ["cursor", "codex", "opencode", "claude-code", "continue"],
     get: () => undefined,
     detectAll: async () => [{ id: "cursor" }, { id: "codex" }],
   },
@@ -206,5 +206,45 @@ describe("buildPluginInstallPlan", () => {
     expect(plan.targets[0]?.engines.find((item) => item.engine === "mcp")?.status).toBe(
       "host-unsupported",
     );
+  });
+
+  it("marks Continue as ready across all five engines", async () => {
+    const plan = await buildPluginInstallPlan(
+      {
+        id: "cert-coach",
+        name: "Certification Coach",
+        version: "0.1.0",
+        mcpServers: [
+          {
+            id: "cert-coach",
+            name: "Certification Coach",
+            transport: { type: "stdio", command: "npx" },
+          },
+        ],
+        skills: [{ id: "study", name: "Study", content: "Study." }],
+        rules: [{ id: "strict", name: "Strict", content: "Be strict.", scope: { type: "always" } }],
+        agents: [{ id: "reviewer", name: "Reviewer", instructions: "Review." }],
+        hooks: [
+          {
+            id: "audit",
+            name: "Audit",
+            events: ["prompt:submit"],
+            phase: "before",
+            handler: async () => {},
+          },
+        ],
+      },
+      {
+        tools: ["continue"],
+        force: true,
+        detectedToolsOverride: ["continue"],
+      },
+    );
+
+    const target = plan.targets[0];
+    expect(target?.installable).toBe(true);
+    for (const engine of ["mcp", "skills", "rules", "agents", "hooks"] as const) {
+      expect(target?.engines.find((item) => item.engine === engine)?.status).toBe("ready");
+    }
   });
 });

@@ -10,5 +10,6 @@ import "./kiro.js";
 import "./opencode.js";
 import "./droid.js";
 import "./copilot.js";
+import "./continue.js";
 import "./roo-code.js";
 import "./zcode.js";

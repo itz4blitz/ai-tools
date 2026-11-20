@@ -1,81 +1,204 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { RuleDefinition } from "../types/index.js";
 
 vi.mock("./registry.js", () => ({ registry: { register: vi.fn() } }));
-vi.mock("node:fs", () => ({ existsSync: vi.fn(() => false) }));
-vi.mock("node:fs/promises", () => ({
-  readFile: vi.fn(),
-  readdir: vi.fn(),
-  writeFile: vi.fn(),
-  mkdir: vi.fn(),
-  rm: vi.fn(),
+
+vi.mock("node:child_process", () => ({
+  exec: vi.fn((_cmd: string, cb: (error: Error | null) => void) => {
+    cb(new Error("not found"));
+  }),
 }));
 
-import { existsSync } from "node:fs";
-import { readFile, readdir } from "node:fs/promises";
+import { exec } from "node:child_process";
 import { ContinueRuleAdapter } from "./continue.js";
 
 describe("ContinueRuleAdapter", () => {
   let adapter: ContinueRuleAdapter;
+  let tmp: string;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
+    tmp = await mkdtemp(join(tmpdir(), "continue-rules-"));
     adapter = new ContinueRuleAdapter();
   });
 
+  afterEach(async () => {
+    await rm(tmp, { recursive: true, force: true });
+  });
+
   describe("metadata", () => {
-    it("has correct id", () => expect(adapter.id).toBe("continue"));
-    it("has correct name", () => expect(adapter.name).toBe("Continue"));
-    it("has correct configDir", () => expect(adapter.configDir).toBe(".continue/rules"));
+    it("exposes Continue identity and cn command", () => {
+      expect(adapter.id).toBe("continue");
+      expect(adapter.name).toBe("Continue");
+      expect(adapter.nativeSupport).toBe(true);
+      expect(adapter.configDir).toBe(".continue/rules");
+      expect(adapter.command).toBe("cn");
+    });
   });
 
-  describe("generate", () => {
-    it("generates files at correct path", async () => {
-      const files = await adapter.generate([
-        { id: "test", name: "Test", content: "Content", scope: { type: "always" } },
-      ]);
-      expect(files[0].path).toBe(".continue/rules/test.md");
-    });
-
+  describe("generate & round-trip import", () => {
     it("handles empty rules", async () => {
-      expect(await adapter.generate([])).toHaveLength(0);
+      expect(await adapter.generate([])).toEqual([]);
+    });
+
+    it("emits YAML frontmatter and round-trips always, glob, manual, and agent scopes", async () => {
+      const rules: RuleDefinition[] = [
+        {
+          id: "always-rule",
+          name: "Always Rule",
+          description: "Applied everywhere",
+          content: "Use strict TypeScript.",
+          scope: { type: "always" },
+        },
+        {
+          id: "glob-rule",
+          name: "Glob Rule",
+          description: "TS files only",
+          content: "Prefer type aliases.",
+          scope: { type: "glob", patterns: ["src/**/*.ts", "packages/**/*.tsx"] },
+        },
+        {
+          id: "manual-rule",
+          name: "Manual Rule",
+          content: "Run benchmarks manually.",
+          scope: { type: "manual" },
+        },
+        {
+          id: "agent-rule",
+          name: "Agent Rule",
+          description: "Use when reviewing PRs",
+          content: "Check edge cases.",
+          scope: { type: "agent", agentId: "reviewer" },
+        },
+      ];
+
+      const files = await adapter.generate(rules);
+      expect(files.map((f) => f.path)).toEqual([
+        ".continue/rules/always-rule.md",
+        ".continue/rules/glob-rule.md",
+        ".continue/rules/manual-rule.md",
+        ".continue/rules/agent-rule.md",
+      ]);
+
+      expect(files[0]?.content).toContain("alwaysApply: true");
+      expect(files[1]?.content).toContain('  - "src/**/*.ts"');
+      expect(files[1]?.content).toContain("alwaysApply: false");
+      expect(files[2]?.content).toContain("alwaysApply: false");
+      expect(files[3]?.content).toContain("description: Use when reviewing PRs");
+      expect(files[3]?.content).not.toContain("alwaysApply:");
+
+      await adapter.install(files, tmp);
+      const imported = await adapter.import(tmp);
+      const byId = new Map(imported.map((r) => [r.id, r]));
+
+      expect(byId.get("always-rule")).toEqual({
+        id: "always-rule",
+        name: "Always Rule",
+        description: "Applied everywhere",
+        content: "Use strict TypeScript.",
+        scope: { type: "always" },
+      });
+
+      expect(byId.get("glob-rule")).toEqual({
+        id: "glob-rule",
+        name: "Glob Rule",
+        description: "TS files only",
+        content: "Prefer type aliases.",
+        scope: { type: "glob", patterns: ["src/**/*.ts", "packages/**/*.tsx"] },
+      });
+
+      expect(byId.get("manual-rule")).toEqual({
+        id: "manual-rule",
+        name: "Manual Rule",
+        content: "Run benchmarks manually.",
+        scope: { type: "manual" },
+      });
+
+      expect(byId.get("agent-rule")).toEqual({
+        id: "agent-rule",
+        name: "Agent Rule",
+        description: "Use when reviewing PRs",
+        content: "Check edge cases.",
+        scope: { type: "agent", agentId: "default" },
+      });
+    });
+
+    it("synthesizes description for agent scope when description is omitted", async () => {
+      const files = await adapter.generate([
+        {
+          id: "auto-agent",
+          name: "Auto Agent",
+          content: "Delegate carefully.",
+          scope: { type: "agent", agentId: "planner" },
+        },
+      ]);
+      expect(files[0]?.content).toContain("description: Agent rule for planner");
+    });
+
+    it("parses CRLF frontmatter, inline globs, plain markdown, and skips non-md files", async () => {
+      const rulesDir = join(tmp, ".continue/rules");
+      await mkdir(rulesDir, { recursive: true });
+      await writeFile(join(rulesDir, "notes.txt"), "ignore me", "utf-8");
+      await writeFile(
+        join(rulesDir, "crlf.md"),
+        '---\r\nname: "CRLF Rule"\r\ndescription: "Win: paths"\r\nglobs: ["*.ts", "*.tsx"]\r\nalwaysApply: false\r\n---\r\n\r\nLine 1\r\nLine 2\r\n',
+        "utf-8",
+      );
+      await writeFile(join(rulesDir, "plain.md"), "# Plain Heading\n\nBody text\n", "utf-8");
+
+      const imported = await adapter.import(tmp);
+      expect(imported).toHaveLength(2);
+      const byId = new Map(imported.map((r) => [r.id, r]));
+
+      expect(byId.get("crlf")).toEqual({
+        id: "crlf",
+        name: "CRLF Rule",
+        description: "Win: paths",
+        content: "Line 1\nLine 2",
+        scope: { type: "glob", patterns: ["*.ts", "*.tsx"] },
+      });
+
+      expect(byId.get("plain")).toEqual({
+        id: "plain",
+        name: "Plain Heading",
+        content: "Body text",
+        scope: { type: "always" },
+      });
+    });
+
+    it("returns empty array when rules directory does not exist", async () => {
+      expect(await adapter.import(tmp)).toEqual([]);
     });
   });
 
-  describe("import", () => {
-    it("returns empty when dir missing", async () => {
-      vi.mocked(existsSync).mockReturnValue(false);
-      expect(await adapter.import("/test")).toEqual([]);
+  describe("detect & uninstall", () => {
+    it("detects .continue/rules directory or cn binary", async () => {
+      expect(await adapter.detect(tmp)).toBe(false);
+
+      await mkdir(join(tmp, ".continue/rules"), { recursive: true });
+      expect(await adapter.detect(tmp)).toBe(true);
+
+      await rm(join(tmp, ".continue"), { recursive: true, force: true });
+      vi.mocked(exec).mockImplementation(((_cmd, cb) => {
+        (cb as (error: Error | null) => void)(null);
+      }) as typeof exec);
+      expect(await adapter.detect(tmp)).toBe(true);
     });
 
-    it("imports rules", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir).mockResolvedValue(["rule.md"] as never);
-      vi.mocked(readFile).mockResolvedValue("# My Rule\n\nContent here.");
-      const result = await adapter.import("/test");
-      expect(result[0].name).toBe("My Rule");
-    });
+    it("removes .continue/rules on uninstall and is safe when missing", async () => {
+      await adapter.uninstall(tmp);
+      const files = await adapter.generate([
+        { id: "r1", name: "R1", content: "Body", scope: { type: "always" } },
+      ]);
+      await adapter.install(files, tmp);
+      expect(existsSync(join(tmp, ".continue/rules/r1.md"))).toBe(true);
 
-    it("skips non-markdown files", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir).mockResolvedValue(["readme.txt", "rule.md"] as never);
-      vi.mocked(readFile).mockResolvedValue("# Skill\n\nContent");
-      const result = await adapter.import("/test");
-      expect(result).toHaveLength(1);
-    });
-
-    it("imports rule without heading", async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(readdir).mockResolvedValue(["plain.md"] as never);
-      vi.mocked(readFile).mockResolvedValue("Just content, no heading");
-      const result = await adapter.import("/test");
-      expect(result[0].name).toBe("plain");
-      expect(result[0].content).toBe("Just content, no heading");
-    });
-
-    it("imports without cwd argument", async () => {
-      vi.mocked(existsSync).mockReturnValue(false);
-      const result = await adapter.import();
-      expect(result).toEqual([]);
+      await adapter.uninstall(tmp);
+      expect(existsSync(join(tmp, ".continue/rules"))).toBe(false);
     });
   });
 });
