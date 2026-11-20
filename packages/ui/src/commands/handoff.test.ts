@@ -8,11 +8,15 @@ const mockAdapters: Array<{
   extractContext: (session: UnifiedSession) => Promise<SessionContext>;
 }> = [];
 
-vi.mock("@itz4blitz/ai-tools-sessions", () => ({
-  registry: {
-    detectAll: async () => mockAdapters,
-  },
-}));
+vi.mock("@itz4blitz/ai-tools-sessions", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@itz4blitz/ai-tools-sessions")>();
+  return {
+    ...actual,
+    registry: {
+      detectAll: async () => mockAdapters,
+    },
+  };
+});
 
 vi.mock("@itz4blitz/ai-tools-sessions/adapters/all", () => ({}));
 
@@ -72,7 +76,7 @@ describe("performHandoff()", () => {
     expect(result?.launchArgs).toEqual([]);
   });
 
-  it("includes launch command when target tool is specified", async () => {
+  it("passes positional prompt for claude, claude-code, and codex", async () => {
     const context = makeContext();
     mockAdapters.push({
       id: "claude",
@@ -81,10 +85,49 @@ describe("performHandoff()", () => {
       extractContext: async () => context,
     });
 
-    const result = await performHandoff("s1", "codex");
-    expect(result?.launchCommand).toBe("codex");
-    expect(result?.launchArgs).toContain("--prompt");
-    expect(result?.launchArgs).toContain("# Handoff content");
+    const claudeResult = await performHandoff("s1", "claude");
+    expect(claudeResult?.launchCommand).toBe("claude");
+    expect(claudeResult?.launchArgs).toEqual(["# Handoff content"]);
+
+    const claudeAliasResult = await performHandoff("s1", "claude-code");
+    expect(claudeAliasResult?.launchCommand).toBe("claude");
+    expect(claudeAliasResult?.launchArgs).toEqual(["# Handoff content"]);
+
+    const codexResult = await performHandoff("s1", "codex");
+    expect(codexResult?.launchCommand).toBe("codex");
+    expect(codexResult?.launchArgs).toEqual(["# Handoff content"]);
+  });
+
+  it("passes -i prompt flag for gemini and gemini-cli", async () => {
+    const context = makeContext();
+    mockAdapters.push({
+      id: "claude",
+      detect: async () => true,
+      parseSessions: async () => [makeSession()],
+      extractContext: async () => context,
+    });
+
+    const geminiResult = await performHandoff("s1", "gemini");
+    expect(geminiResult?.launchCommand).toBe("gemini");
+    expect(geminiResult?.launchArgs).toEqual(["-i", "# Handoff content"]);
+
+    const geminiAliasResult = await performHandoff("s1", "gemini-cli");
+    expect(geminiAliasResult?.launchCommand).toBe("gemini");
+    expect(geminiAliasResult?.launchArgs).toEqual(["-i", "# Handoff content"]);
+  });
+
+  it("passes --prompt flag for opencode", async () => {
+    const context = makeContext();
+    mockAdapters.push({
+      id: "claude",
+      detect: async () => true,
+      parseSessions: async () => [makeSession()],
+      extractContext: async () => context,
+    });
+
+    const opencodeResult = await performHandoff("s1", "opencode");
+    expect(opencodeResult?.launchCommand).toBe("opencode");
+    expect(opencodeResult?.launchArgs).toEqual(["--prompt", "# Handoff content"]);
   });
 
   it("returns null launch command for unknown target tool", async () => {
@@ -98,20 +141,6 @@ describe("performHandoff()", () => {
 
     const result = await performHandoff("s1", "unknown-tool");
     expect(result?.launchCommand).toBeNull();
-    expect(result?.launchArgs).toEqual([]);
-  });
-
-  it("returns empty args for tools without prompt flag", async () => {
-    const context = makeContext();
-    mockAdapters.push({
-      id: "claude",
-      detect: async () => true,
-      parseSessions: async () => [makeSession()],
-      extractContext: async () => context,
-    });
-
-    const result = await performHandoff("s1", "gemini");
-    expect(result?.launchCommand).toBe("gemini");
     expect(result?.launchArgs).toEqual([]);
   });
 });

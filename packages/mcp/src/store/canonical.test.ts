@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 vi.mock("node:fs", () => ({
@@ -43,7 +44,7 @@ describe("CanonicalStore.write", () => {
     const store = new CanonicalStore("/test");
     const paths = await store.write([server]);
 
-    expect(mockMkdir).toHaveBeenCalledWith(expect.stringContaining(".ai-tools/mcp"), {
+    expect(mockMkdir).toHaveBeenCalledWith(expect.stringContaining(join(".ai-tools", "mcp")), {
       recursive: true,
     });
     expect(mockWriteFile).toHaveBeenCalledWith(

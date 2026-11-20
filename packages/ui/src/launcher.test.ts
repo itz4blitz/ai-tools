@@ -36,6 +36,7 @@ describe("launchTool", () => {
       [],
       expect.objectContaining({
         stdio: "inherit",
+        shell: process.platform === "win32",
       }),
     );
     expect(result.pid).toBe(1234);
@@ -103,6 +104,26 @@ describe("launchTool", () => {
       "claude",
       ["--prompt", "hello world"],
       expect.any(Object),
+    );
+  });
+
+  it("disables shell when args contain multiline content or shell metacharacters", async () => {
+    const child = createMockChild(1);
+    const mockSpawn = createMockSpawn(child);
+
+    const promise = launchTool(
+      { command: "claude", args: ["# Handoff\nbody | whoami"] },
+      mockSpawn,
+    );
+    child.emit("close", 0);
+    await promise;
+
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "claude",
+      ["# Handoff\nbody | whoami"],
+      expect.objectContaining({
+        shell: false,
+      }),
     );
   });
 

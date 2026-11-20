@@ -1,15 +1,5 @@
-import type { SessionContext } from "@itz4blitz/ai-tools-sessions";
+import { HANDOFF_TARGETS, type SessionContext } from "@itz4blitz/ai-tools-sessions";
 import { loadSessionRegistry } from "./handoff-runtime.js";
-
-/**
- * Tools that support handoff launching.
- */
-const HANDOFF_TARGETS: Record<string, { name: string; command: string; promptFlag: string }> = {
-  claude: { name: "Claude Code", command: "claude", promptFlag: "--prompt" },
-  codex: { name: "Codex", command: "codex", promptFlag: "--prompt" },
-  gemini: { name: "Gemini CLI", command: "gemini", promptFlag: "" },
-  opencode: { name: "OpenCode", command: "opencode", promptFlag: "" },
-};
 
 /**
  * Extract handoff context from a session using the adapter registry.
@@ -74,8 +64,8 @@ export function previewHandoff(context: SessionContext): string {
  * Get list of tools that support handoff launching.
  */
 export function getTargetTools(): Array<{ id: string; name: string; command: string }> {
-  return Object.entries(HANDOFF_TARGETS).map(([id, target]) => ({
-    id,
+  return HANDOFF_TARGETS.map((target) => ({
+    id: target.id,
     name: target.name,
     command: target.command,
   }));

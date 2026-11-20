@@ -35,6 +35,21 @@ describe("mcp-servers-json", () => {
     expect(servers[0]?.transport).toEqual({ type: "sse", url: "https://example.com/sse" });
   });
 
+  it("maps streamable-http and streamableHttp to http (not sse)", () => {
+    const servers = fromMcpServersMap({
+      kebab: { type: "streamable-http", url: "https://example.com/mcp" },
+      camel: { type: "streamableHttp", url: "https://example.com/mcp2" },
+    });
+    expect(servers.find((s) => s.id === "kebab")?.transport).toEqual({
+      type: "http",
+      url: "https://example.com/mcp",
+    });
+    expect(servers.find((s) => s.id === "camel")?.transport).toEqual({
+      type: "http",
+      url: "https://example.com/mcp2",
+    });
+  });
+
   it("skips entries that have neither command nor url", () => {
     expect(fromMcpServersMap({ broken: { type: "http" } })).toEqual([]);
   });

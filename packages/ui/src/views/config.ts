@@ -1,3 +1,4 @@
+import { isAbsolute, relative, sep } from "node:path";
 import type { UiKit } from "../types.js";
 import type { EngineStatus, ToolDeployment, ManifestHealth } from "../widgets/config-dashboard.js";
 import type { ConfigLastAction } from "../runtime/state.js";
@@ -36,6 +37,13 @@ export type ConfigViewState = {
   configLastAction: ConfigLastAction | null;
   keyOverrides: Record<string, string>;
 };
+
+function formatRelativePath(targetPath: string): string {
+  const rel = relative(process.cwd(), targetPath);
+  if (rel === "") return ".";
+  if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return targetPath;
+  return rel;
+}
 
 function hColor(health: string): { r: number; g: number; b: number } {
   const h = health.toLowerCase();
@@ -174,7 +182,7 @@ export function renderConfigView<T>(ui: UiKit<T>, state: ConfigViewState): T {
     const dotColor = e.configured ? STATUS.success : e.error ? STATUS.error : TEXT.tertiary;
     const statusText = e.configured ? "configured" : e.error ? "error" : "not configured";
     const detailText = e.configPath
-      ? e.configPath.replace(process.cwd() + "/", "")
+      ? formatRelativePath(e.configPath)
       : e.error
         ? `error: ${e.error}`
         : e.configured
@@ -267,7 +275,7 @@ export function renderConfigView<T>(ui: UiKit<T>, state: ConfigViewState): T {
           : d.status === "stale"
             ? getIconChar("status.stale")
             : getIconChar("status.error");
-      const shortTarget = d.targetPath.replace(process.cwd() + "/", "");
+      const shortTarget = formatRelativePath(d.targetPath);
 
       return ui.box({ style: { bg: rowBg } }, [
         ui.richText([

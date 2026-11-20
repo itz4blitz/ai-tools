@@ -60,6 +60,20 @@ describe("switchTool()", () => {
     const result = switchTool("droid", []);
     expect(result?.command).toBe("droid");
   });
+
+  it("resolves canonical tool ID aliases (claude-code, gemini-cli)", () => {
+    const spawnClaude = switchTool("claude-code", []);
+    expect(spawnClaude?.action).toBe("spawn");
+    expect(spawnClaude?.command).toBe("claude");
+
+    const spawnGemini = switchTool("gemini-cli", []);
+    expect(spawnGemini?.action).toBe("spawn");
+    expect(spawnGemini?.command).toBe("gemini");
+
+    const focusExisting = switchTool("claude-code", [{ toolId: "claude", active: true }]);
+    expect(focusExisting?.action).toBe("focus");
+    expect(focusExisting?.paneIndex).toBe(0);
+  });
 });
 
 // -- getToolDefinitions --

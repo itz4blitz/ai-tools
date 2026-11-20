@@ -1,5 +1,12 @@
 import type { BaseSessionAdapter } from "./base.js";
 
+const ID_ALIASES: Record<string, string> = {
+  "claude-code": "claude",
+  claude: "claude-code",
+  "gemini-cli": "gemini",
+  gemini: "gemini-cli",
+};
+
 class SessionAdapterRegistry {
   private adapters: Map<string, BaseSessionAdapter> = new Map();
 
@@ -8,7 +15,10 @@ class SessionAdapterRegistry {
   }
 
   get(id: string): BaseSessionAdapter | undefined {
-    return this.adapters.get(id);
+    const direct = this.adapters.get(id);
+    if (direct) return direct;
+    const alias = ID_ALIASES[id];
+    return alias ? this.adapters.get(alias) : undefined;
   }
 
   list(): string[] {

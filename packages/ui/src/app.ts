@@ -77,18 +77,38 @@ export async function detectMode(): Promise<"canonical" | "direct" | "unknown"> 
 
   // Check if any tool config file exists in common locations
   const directMarkers = [
-    resolve(process.cwd(), "CLAUDE.md"),
-    resolve(process.cwd(), ".claude"),
-    resolve(process.cwd(), ".gemini"),
-    resolve(process.cwd(), "codex.md"),
-  ];
+    "CLAUDE.md",
+    ".claude",
+    ".gemini",
+    "codex.md",
+    ".cursor",
+    ".opencode",
+    ".codex",
+    ".factory",
+    ".kiro",
+    ".cline",
+    ".clinerules",
+    ".grok",
+    ".zcode",
+    ".roo",
+    ".roomodes",
+    ".windsurf",
+    ".continue",
+    ".amp",
+    ".agents",
+    "AGENTS.md",
+    "GEMINI.md",
+    ".mcp.json",
+    "opencode.json",
+  ].map((marker) => resolve(process.cwd(), marker));
   if (directMarkers.some((p) => existsSync(p))) return "direct";
 
   return "unknown";
 }
 
 /**
- * Check whether canonical config (.ai-tools/) exists and is valid.
+ * Check whether canonical config (.ai-tools/) exists and is valid,
+ * or whether the repository is a valid direct-mode workspace.
  */
 export async function computeConfigHealth(): Promise<"healthy" | "stale" | "error"> {
   const { existsSync, statSync } = await import("node:fs");
@@ -97,7 +117,8 @@ export async function computeConfigHealth(): Promise<"healthy" | "stale" | "erro
   const configDir = resolve(process.cwd(), ".ai-tools");
 
   if (!existsSync(configDir)) {
-    return "error";
+    const mode = await detectMode();
+    return mode === "direct" ? "healthy" : "error";
   }
 
   try {

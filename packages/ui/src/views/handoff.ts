@@ -1,3 +1,4 @@
+import { HANDOFF_TARGETS as SHARED_HANDOFF_TARGETS } from "@itz4blitz/ai-tools-sessions";
 import type { UiKit } from "../types.js";
 import type { SessionRow } from "../widgets/session-browser.js";
 import {
@@ -40,12 +41,10 @@ export type HandoffViewState = {
 
 type HandoffTarget = { id: string; name: string };
 
-const HANDOFF_TARGETS: HandoffTarget[] = [
-  { id: "claude", name: "Claude Code" },
-  { id: "codex", name: "Codex" },
-  { id: "gemini", name: "Gemini CLI" },
-  { id: "opencode", name: "OpenCode" },
-];
+const HANDOFF_TARGETS: HandoffTarget[] = SHARED_HANDOFF_TARGETS.map(({ id, name }) => ({
+  id,
+  name,
+}));
 
 /**
  * Render a rich step-progress indicator as a richText row.

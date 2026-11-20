@@ -1,15 +1,5 @@
-import type { SessionContext } from "@itz4blitz/ai-tools-sessions";
+import { buildHandoffCommand, type SessionContext } from "@itz4blitz/ai-tools-sessions";
 import { extractHandoffContext, previewHandoff } from "../widgets/handoff-panel.js";
-
-/**
- * Tool launch commands for handoff.
- */
-const LAUNCH_COMMANDS: Record<string, { command: string; promptFlag: string }> = {
-  claude: { command: "claude", promptFlag: "--prompt" },
-  codex: { command: "codex", promptFlag: "--prompt" },
-  gemini: { command: "gemini", promptFlag: "" },
-  opencode: { command: "opencode", promptFlag: "" },
-};
 
 export type HandoffResult = {
   context: SessionContext;
@@ -32,15 +22,13 @@ export async function performHandoff(
   const preview = previewHandoff(context);
 
   let launchCommand: string | null = null;
-  const launchArgs: string[] = [];
+  let launchArgs: string[] = [];
 
   if (targetTool) {
-    const target = LAUNCH_COMMANDS[targetTool];
-    if (target) {
-      launchCommand = target.command;
-      if (target.promptFlag) {
-        launchArgs.push(target.promptFlag, context.handoffMarkdown);
-      }
+    const built = buildHandoffCommand(targetTool, context.handoffMarkdown);
+    if (built) {
+      launchCommand = built.command;
+      launchArgs = built.args;
     }
   }
 

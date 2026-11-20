@@ -67,6 +67,29 @@ describe("getAvailableTools()", () => {
     const tools = getAvailableTools(detected);
     expect(tools.some((t) => t.id === "custom-tool")).toBe(true);
   });
+
+  it("deduplicates canonical aliases (claude-code / gemini-cli) against static definitions", () => {
+    const detected: ToolInfo[] = [
+      {
+        id: "claude-code",
+        name: "Claude Code",
+        command: "claude",
+        status: "available",
+        sessionCount: 4,
+      },
+      {
+        id: "gemini-cli",
+        name: "Gemini CLI",
+        command: "gemini",
+        status: "available",
+        sessionCount: 1,
+      },
+    ];
+
+    const tools = getAvailableTools(detected);
+    expect(tools.filter((t) => t.id === "claude" || t.id === "claude-code")).toHaveLength(1);
+    expect(tools.filter((t) => t.id === "gemini" || t.id === "gemini-cli")).toHaveLength(1);
+  });
 });
 
 // -- getToolCommand --
@@ -74,8 +97,10 @@ describe("getAvailableTools()", () => {
 describe("getToolCommand()", () => {
   it("returns command for known tool", () => {
     expect(getToolCommand("claude")).toBe("claude");
+    expect(getToolCommand("claude-code")).toBe("claude");
     expect(getToolCommand("codex")).toBe("codex");
     expect(getToolCommand("gemini")).toBe("gemini");
+    expect(getToolCommand("gemini-cli")).toBe("gemini");
   });
 
   it("returns null for unknown tool", () => {

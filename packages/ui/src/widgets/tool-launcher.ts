@@ -1,5 +1,14 @@
 import type { ToolInfo } from "../types.js";
 
+const TOOL_ID_ALIASES: Record<string, string> = {
+  "claude-code": "claude",
+  "gemini-cli": "gemini",
+};
+
+function normalizeToolId(toolId: string): string {
+  return TOOL_ID_ALIASES[toolId] ?? toolId;
+}
+
 /**
  * Static tool definitions with their CLI commands.
  */
@@ -19,7 +28,7 @@ const TOOL_DEFINITIONS: Record<string, { name: string; command: string }> = {
  */
 export function getAvailableTools(detectedTools?: ToolInfo[]): ToolInfo[] {
   const detected = detectedTools ?? [];
-  const detectedIds = new Set(detected.map((t) => t.id));
+  const detectedIds = new Set(detected.flatMap((t) => [t.id, normalizeToolId(t.id)]));
   const tools: ToolInfo[] = [...detected];
 
   for (const [id, def] of Object.entries(TOOL_DEFINITIONS)) {
@@ -41,7 +50,7 @@ export function getAvailableTools(detectedTools?: ToolInfo[]): ToolInfo[] {
  * Get the CLI command for a specific tool.
  */
 export function getToolCommand(toolId: string): string | null {
-  const def = TOOL_DEFINITIONS[toolId];
+  const def = TOOL_DEFINITIONS[toolId] ?? TOOL_DEFINITIONS[normalizeToolId(toolId)];
   return def?.command ?? null;
 }
 
