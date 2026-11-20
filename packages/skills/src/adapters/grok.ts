@@ -2,7 +2,8 @@ import { BaseSkillAdapter } from "./base.js";
 import { registry } from "./registry.js";
 import type { SkillDefinition, GeneratedFile, SkillLayer } from "../types/index.js";
 import { existsSync } from "node:fs";
-import { readFile, readdir } from "node:fs/promises";
+import { readFile, readdir, rm } from "node:fs/promises";
+import { homedir } from "node:os";
 import { resolve } from "node:path";
 
 class GrokSkillAdapter extends BaseSkillAdapter {
@@ -18,7 +19,22 @@ class GrokSkillAdapter extends BaseSkillAdapter {
 
   async import(cwd?: string): Promise<SkillDefinition[]> {
     const dir = cwd ?? process.cwd();
+    return this.importFromDir(resolve(dir, this.configDir));
+  }
+
+  async importUser(): Promise<SkillDefinition[]> {
+    return this.importFromDir(resolve(homedir(), this.skillsDir("user")));
+  }
+
+  override async uninstall(cwd?: string): Promise<void> {
+    const dir = cwd ?? process.cwd();
     const skillsDir = resolve(dir, this.configDir);
+    if (existsSync(skillsDir)) {
+      await rm(skillsDir, { recursive: true, force: true });
+    }
+  }
+
+  private async importFromDir(skillsDir: string): Promise<SkillDefinition[]> {
     if (!existsSync(skillsDir)) return [];
 
     const entries = await readdir(skillsDir, { withFileTypes: true });
@@ -36,11 +52,11 @@ class GrokSkillAdapter extends BaseSkillAdapter {
 
 function formatGrokSkill(skill: SkillDefinition): string {
   const description = skill.description ?? skill.name;
-  return `---\nname: ${skill.name}\ndescription: ${description}\n---\n\n${skill.content}\n`;
+  return `---\nname: ${skill.id}\ndescription: ${description}\n---\n\n${skill.content}\n`;
 }
 
 function parseGrokSkill(id: string, raw: string): SkillDefinition {
-  const match = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/.exec(raw.trim());
+  const match = /^---\r?\n([\s\S]*?)(?:\r?\n)?---(?:\r?\n([\s\S]*))?$/.exec(raw.trim());
   if (!match) {
     return { id, name: id, content: raw.trim() };
   }
@@ -48,7 +64,7 @@ function parseGrokSkill(id: string, raw: string): SkillDefinition {
   const body = (match[2] ?? "").trim();
   let name = id;
   let description: string | undefined;
-  for (const line of frontmatter.split("\n")) {
+  for (const line of frontmatter.split(/\r?\n/)) {
     const colon = line.indexOf(":");
     if (colon === -1) continue;
     const key = line.slice(0, colon).trim();
