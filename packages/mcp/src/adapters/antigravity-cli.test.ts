@@ -85,6 +85,15 @@ describe("AntigravityCliMCPAdapter", () => {
     expect(await adapter.detect(tmp)).toBe(true);
 
     await rm(join(home, ".gemini"), { recursive: true, force: true });
+    await mkdir(join(tmp, ".agents", "plugins", "ai-tools"), { recursive: true });
+    await writeFile(
+      join(tmp, ".agents", "plugins", "ai-tools", "mcp_config.json"),
+      "{}\n",
+      "utf-8",
+    );
+    expect(await adapter.detect(tmp)).toBe(true);
+
+    await rm(join(tmp, ".agents"), { recursive: true, force: true });
     vi.mocked(execFile).mockImplementation(((_cmd, _args, cb) => {
       (cb as (error: Error | null) => void)(null);
     }) as typeof execFile);

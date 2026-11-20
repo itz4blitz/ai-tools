@@ -125,6 +125,7 @@ export class AntigravityCliMCPAdapter extends BaseMCPAdapter {
 
     const servers: MCPServerDefinition[] = [];
     for (const [id, config] of Object.entries(data.mcpServers ?? {})) {
+      if (!config || typeof config !== "object" || Array.isArray(config)) continue;
       if (typeof config.command === "string") {
         const transport: Extract<MCPTransport, { type: "stdio" }> = {
           type: "stdio",

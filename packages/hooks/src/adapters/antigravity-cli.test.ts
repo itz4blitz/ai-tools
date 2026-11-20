@@ -210,6 +210,11 @@ describe("AntigravityCliAdapter", () => {
     expect(await adapter.detect()).toBe(true);
 
     await rm(join(home, ".gemini"), { recursive: true, force: true });
+    await mkdir(join(home, ".gemini/config"), { recursive: true });
+    await writeFile(join(home, ".gemini/config/hooks.json"), "{}\n", "utf-8");
+    expect(await adapter.detect()).toBe(true);
+
+    await rm(join(home, ".gemini"), { recursive: true, force: true });
     await mkdir(join(tmp, ".agents"), { recursive: true });
     expect(await adapter.detect()).toBe(true);
 
