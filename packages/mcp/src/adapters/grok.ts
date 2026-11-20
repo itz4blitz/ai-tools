@@ -1,18 +1,18 @@
 import { homedir } from "node:os";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { BaseMCPAdapter } from "./base.js";
 import { registry } from "./registry.js";
 import type { GeneratedFile, MCPServerDefinition } from "../types/index.js";
-import { encodeMcpToml, mergeMcpToml, parseMcpToml } from "../toml-mcp.js";
+import { encodeMcpToml, mergeMcpToml, parseMcpToml, stripMcpTomlTables } from "../toml-mcp.js";
 
 class GrokMCPAdapter extends BaseMCPAdapter {
   readonly id = "grok";
   readonly name = "Grok";
   readonly nativeSupport = true;
   readonly configPath = ".grok/config.toml";
-  readonly userConfigPath = `${homedir()}/.grok/config.toml`;
+  readonly userConfigPath = join(homedir(), ".grok", "config.toml");
   readonly command = "grok";
 
   async generate(servers: MCPServerDefinition[]): Promise<GeneratedFile[]> {
@@ -46,6 +46,20 @@ class GrokMCPAdapter extends BaseMCPAdapter {
       }
       await mkdir(dirname(fullPath), { recursive: true });
       await writeFile(fullPath, content.endsWith("\n") ? content : `${content}\n`, "utf-8");
+    }
+  }
+
+  override async uninstall(cwd?: string): Promise<void> {
+    const dir = cwd ?? process.cwd();
+    const fullPath = resolve(dir, this.configPath);
+    if (!existsSync(fullPath)) return;
+
+    const existing = await readFile(fullPath, "utf-8");
+    const remaining = stripMcpTomlTables(existing);
+    if (remaining.trim() === "") {
+      await rm(fullPath);
+    } else {
+      await writeFile(fullPath, `${remaining}\n`, "utf-8");
     }
   }
 

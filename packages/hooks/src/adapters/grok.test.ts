@@ -5,6 +5,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HookContext, HookDefinition, HookEventType } from "../index.js";
 
+const mockHome = vi.hoisted(() => ({ dir: "" }));
+
+vi.mock("node:os", async () => {
+  const actual = await vi.importActual<typeof import("node:os")>("node:os");
+  return {
+    ...actual,
+    homedir: () => mockHome.dir || actual.homedir(),
+  };
+});
+
 vi.mock("./index.js", async () => {
   const { BaseAdapter } = await import("./base.js");
   return { BaseAdapter, registry: { register: vi.fn() } };
@@ -37,30 +47,50 @@ const shellHook: HookDefinition = {
 describe("GrokAdapter", () => {
   let adapter: GrokAdapter;
   let tmp: string;
+  let fakeHome: string;
   let previousCwd: string;
 
   beforeEach(async () => {
     vi.clearAllMocks();
     adapter = new GrokAdapter();
-    tmp = await mkdtemp(join(tmpdir(), "grok-hooks-"));
+    tmp = await mkdtemp(join(tmpdir(), "grok hooks-"));
+    fakeHome = await mkdtemp(join(tmpdir(), "grok-home-"));
+    mockHome.dir = fakeHome;
     previousCwd = process.cwd();
     process.chdir(tmp);
   });
 
   afterEach(async () => {
     process.chdir(previousCwd);
+    mockHome.dir = "";
     await rm(tmp, { recursive: true, force: true });
+    await rm(fakeHome, { recursive: true, force: true });
   });
 
-  it("uses Grok identity and Claude-compatible events", () => {
+  it("uses Grok identity, Stop/prompt:response mapping, and file blockable events", () => {
     expect(adapter.id).toBe("grok");
     expect(adapter.name).toBe("Grok");
     expect(adapter.mapEvent("tool:before")).toEqual(["PreToolUse"]);
     expect(adapter.mapEvent("session:end")).toEqual(["SessionEnd"]);
+    expect(adapter.mapEvent("prompt:response")).toEqual(["Stop"]);
     expect(adapter.mapNativeEvent("SessionStart")).toEqual(["session:start"]);
+    expect(adapter.mapNativeEvent("Stop")).toEqual(["prompt:response"]);
+    expect(adapter.capabilities.supportedEvents).toContain("prompt:response");
+    expect(adapter.capabilities.blockableEvents).toEqual(
+      expect.arrayContaining([
+        "prompt:submit",
+        "tool:before",
+        "file:read",
+        "file:write",
+        "file:edit",
+        "file:delete",
+        "shell:before",
+        "mcp:before",
+      ]),
+    );
   });
 
-  it("writes .grok/hooks JSON Grok actually loads plus a HookEngine runner", async () => {
+  it("writes .grok/hooks JSON with repo-root runner command and import.meta.url PROJECT_ROOT", async () => {
     const files = await adapter.generate([shellHook]);
     await adapter.install(files);
 
@@ -74,30 +104,52 @@ describe("GrokAdapter", () => {
     expect(existsSync(jsonPath)).toBe(true);
     expect(existsSync(runnerPath)).toBe(true);
 
-    expect(JSON.parse(await readFile(jsonPath, "utf-8"))).toEqual({
+    const parsedJson = JSON.parse(await readFile(jsonPath, "utf-8")) as {
+      hooks: Record<
+        string,
+        Array<{ hooks: Array<{ type: string; command: string; timeout: number }> }>
+      >;
+    };
+    expect(parsedJson).toEqual({
       hooks: {
         PreToolUse: [
           {
-            hooks: [{ type: "command", command: "node ai-tools-runner.js", timeout: 10 }],
+            hooks: [
+              {
+                type: "command",
+                command: 'node ".grok/hooks/ai-tools-runner.js"',
+                timeout: 10,
+              },
+            ],
           },
         ],
       },
     });
 
+    // Verify the relative path referenced by RUNNER_COMMAND exists from repo root
+    const command = parsedJson.hooks.PreToolUse?.[0]?.hooks?.[0]?.command ?? "";
+    const scriptRelPath = command.match(/^node "(.+)"$/)?.[1];
+    expect(scriptRelPath).toBe(".grok/hooks/ai-tools-runner.js");
+    expect(existsSync(join(tmp, scriptRelPath!))).toBe(true);
+
     const runner = await readFile(runnerPath, "utf-8");
     expect(runner.startsWith("#!/usr/bin/env node\n")).toBe(true);
+    expect(runner).toContain('import { dirname, resolve } from "node:path"');
+    expect(runner).toContain('import { fileURLToPath } from "node:url"');
+    expect(runner).toContain(
+      'const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");',
+    );
+    expect(runner).not.toContain(tmp);
     expect(runner).toContain('import { runGrokHook } from "@itz4blitz/ai-tools-hooks"');
     expect(runner).toContain("process.exit(await runGrokHook())");
-    expect(runner).not.toContain("process.stderr.write('ai-tools grok hook runner");
-    expect(runner).not.toMatch(/process\.exit\(0\);\s*$/);
   });
 
-  it("maps multiple universal events onto Grok native names without duplicates", async () => {
+  it("maps multiple universal events including prompt:response onto Grok native names without duplicates", async () => {
     const files = await adapter.generate([
       {
         id: "multi",
         name: "multi",
-        events: ["session:start", "shell:before", "file:write", "notification"],
+        events: ["session:start", "prompt:response", "shell:before", "file:write", "notification"],
         phase: "before",
         handler: makeHandler(),
       },
@@ -107,14 +159,26 @@ describe("GrokAdapter", () => {
       "Notification",
       "PreToolUse",
       "SessionStart",
+      "Stop",
     ]);
     expect(json.hooks.PreToolUse).toHaveLength(1);
   });
 
-  it("detects a .grok directory even without the grok binary", async () => {
-    expect(await adapter.detect()).toBe(false);
-    await mkdir(join(tmp, ".grok"));
-    expect(await adapter.detect()).toBe(true);
+  it("detects a project .grok directory with explicit cwd", async () => {
+    const otherDir = await mkdtemp(join(tmpdir(), "grok-other-"));
+    try {
+      expect(await adapter.detect(otherDir)).toBe(false);
+      await mkdir(join(otherDir, ".grok"));
+      expect(await adapter.detect(otherDir)).toBe(true);
+    } finally {
+      await rm(otherDir, { recursive: true, force: true });
+    }
+  });
+
+  it("detects a user ~/.grok directory even without project .grok or binary", async () => {
+    expect(await adapter.detect(tmp)).toBe(false);
+    await mkdir(join(fakeHome, ".grok"));
+    expect(await adapter.detect(tmp)).toBe(true);
   });
 
   it("detects the grok command when present", async () => {
@@ -124,28 +188,54 @@ describe("GrokAdapter", () => {
     expect(await adapter.detect()).toBe(true);
   });
 
-  it("imports command hooks from .grok/hooks/*.json", async () => {
+  it("imports and disambiguates hook IDs across multiple .grok/hooks/*.json files", async () => {
     await mkdir(join(tmp, ".grok/hooks"), { recursive: true });
     await writeFile(
-      join(tmp, ".grok/hooks/dcg.json"),
+      join(tmp, ".grok/hooks/alpha.json"),
       `${JSON.stringify({
         hooks: {
           PreToolUse: [
             {
               matcher: "Bash",
-              hooks: [{ type: "command", command: "/usr/bin/dcg", timeout: 5 }],
+              hooks: [{ type: "command", command: "/usr/bin/alpha-check", timeout: 5 }],
             },
           ],
         },
       })}\n`,
       "utf-8",
     );
+    await writeFile(
+      join(tmp, ".grok/hooks/beta.json"),
+      `${JSON.stringify({
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: "Write",
+              hooks: [{ type: "command", command: "/usr/bin/beta-check", timeout: 5 }],
+            },
+          ],
+          Stop: [
+            {
+              hooks: [{ type: "command", command: "/usr/bin/on-stop", timeout: 5 }],
+            },
+          ],
+        },
+      })}\n`,
+      "utf-8",
+    );
+
     const imported = await adapter.import(tmp);
-    expect(imported).toHaveLength(1);
-    expect(imported[0]?.id).toBe("grok-PreToolUse-0-0");
-    expect(imported[0]?.name).toBe("/usr/bin/dcg");
+    expect(imported).toHaveLength(3);
+    expect(imported.map((h) => h.id)).toEqual([
+      "grok-alpha-PreToolUse-0-0",
+      "grok-beta-PreToolUse-0-0",
+      "grok-beta-Stop-0-0",
+    ]);
+    expect(imported[0]?.name).toBe("/usr/bin/alpha-check");
     expect(imported[0]?.events).toContain("shell:before");
     expect(imported[0]?.phase).toBe("before");
+    expect(imported[2]?.events).toEqual(["prompt:response"]);
+    expect(imported[2]?.phase).toBe("after");
   });
 
   it("skips invalid JSON while importing Grok hooks", async () => {

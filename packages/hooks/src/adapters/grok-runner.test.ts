@@ -245,4 +245,74 @@ export default {
       reason: "Blocked by ai-hooks",
     });
   });
+
+  it("forwards result.data.additionalContext via hookSpecificOutput", async () => {
+    const out: string[] = [];
+    const code = await runGrokHook({
+      config: {
+        hooks: [
+          {
+            id: "ctx-1",
+            name: "ctx-1",
+            events: ["prompt:submit"],
+            phase: "before",
+            handler: async (ctx, next) => {
+              ctx.results.push({ data: { additionalContext: "Remember to run tests." } });
+              await next();
+            },
+          },
+          {
+            id: "ctx-2",
+            name: "ctx-2",
+            events: ["prompt:submit"],
+            phase: "before",
+            handler: async (ctx, next) => {
+              ctx.results.push({ data: { additionalContext: "Use strict TypeScript." } });
+              await next();
+            },
+          },
+        ],
+      },
+      stdin: JSON.stringify({ hookEventName: "UserPromptSubmit", prompt: "refactor auth" }),
+      stdout: { write: (chunk: string) => out.push(chunk) },
+    });
+
+    expect(code).toBe(0);
+    expect(JSON.parse(out.join(""))).toEqual({
+      hookSpecificOutput: {
+        hookEventName: "UserPromptSubmit",
+        additionalContext: "Remember to run tests.\nUse strict TypeScript.",
+      },
+    });
+  });
+
+  it("dispatches Stop events with lastAssistantMessage as prompt:response", async () => {
+    const dir = await tempDir();
+    const marker = join(dir, "response.txt");
+    const code = await runGrokHook({
+      config: {
+        hooks: [
+          {
+            id: "log-response",
+            name: "log-response",
+            events: ["prompt:response"],
+            phase: "after",
+            handler: async (ctx, next) => {
+              if (ctx.event.type === "prompt:response") {
+                await writeFile(marker, ctx.event.response, "utf-8");
+              }
+              await next();
+            },
+          },
+        ],
+      },
+      stdin: JSON.stringify({
+        hookEventName: "Stop",
+        lastAssistantMessage: "All checks passed.",
+      }),
+    });
+
+    expect(code).toBe(0);
+    expect(await readFile(marker, "utf-8")).toBe("All checks passed.");
+  });
 });

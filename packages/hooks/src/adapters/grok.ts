@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { homedir } from "node:os";
+import { basename, join, resolve } from "node:path";
 import { BaseAdapter, registry } from "./index.js";
 import { collectNativeEvents, parseHookGroups, type NativeHookGroup } from "./claude-compat.js";
 import type {
@@ -19,7 +20,7 @@ const EVENT_MAP: Record<string, string[]> = {
   "session:start": ["SessionStart"],
   "session:end": ["SessionEnd"],
   "prompt:submit": ["UserPromptSubmit"],
-  "prompt:response": [],
+  "prompt:response": ["Stop"],
   "tool:before": ["PreToolUse"],
   "tool:after": ["PostToolUse"],
   "file:read": ["PreToolUse"],
@@ -37,6 +38,7 @@ const REVERSE_MAP: Record<string, HookEventType[]> = {
   SessionStart: ["session:start"],
   SessionEnd: ["session:end"],
   UserPromptSubmit: ["prompt:submit"],
+  Stop: ["prompt:response"],
   PreToolUse: [
     "tool:before",
     "file:read",
@@ -52,7 +54,7 @@ const REVERSE_MAP: Record<string, HookEventType[]> = {
 
 const HOOKS_JSON = ".grok/hooks/ai-tools.json";
 const RUNNER_JS = ".grok/hooks/ai-tools-runner.js";
-const RUNNER_COMMAND = "node ai-tools-runner.js";
+const RUNNER_COMMAND = 'node ".grok/hooks/ai-tools-runner.js"';
 
 class GrokAdapter extends BaseAdapter {
   readonly id = "grok";
@@ -68,6 +70,7 @@ class GrokAdapter extends BaseAdapter {
       "session:start",
       "session:end",
       "prompt:submit",
+      "prompt:response",
       "tool:before",
       "tool:after",
       "file:read",
@@ -80,13 +83,24 @@ class GrokAdapter extends BaseAdapter {
       "mcp:after",
       "notification",
     ],
-    blockableEvents: ["prompt:submit", "tool:before", "shell:before", "mcp:before"],
+    blockableEvents: [
+      "prompt:submit",
+      "tool:before",
+      "file:read",
+      "file:write",
+      "file:edit",
+      "file:delete",
+      "shell:before",
+      "mcp:before",
+    ],
   };
 
-  async detect(): Promise<boolean> {
+  async detect(cwd?: string): Promise<boolean> {
+    const dir = cwd ?? process.cwd();
     const hasCommand = await this.commandExists("grok");
-    const hasDir = existsSync(resolve(process.cwd(), ".grok"));
-    return hasCommand || hasDir;
+    const hasProjectDir = existsSync(resolve(dir, ".grok"));
+    const hasUserDir = existsSync(join(homedir(), ".grok"));
+    return hasCommand || hasProjectDir || hasUserDir;
   }
 
   async generate(hooks: HookDefinition[]): Promise<GeneratedConfig[]> {
@@ -118,7 +132,7 @@ class GrokAdapter extends BaseAdapter {
     const dir = cwd ?? process.cwd();
     const hooksDir = resolve(dir, ".grok/hooks");
     if (!existsSync(hooksDir)) return [];
-    const entries = await readdir(hooksDir);
+    const entries = (await readdir(hooksDir)).toSorted();
     const imported: HookDefinition[] = [];
     for (const entry of entries) {
       if (!entry.endsWith(".json")) continue;
@@ -131,9 +145,10 @@ class GrokAdapter extends BaseAdapter {
       } catch {
         continue;
       }
+      const source = `grok-${basename(entry, ".json")}`;
       for (const [nativeEvent, groups] of Object.entries(parsed.hooks ?? {})) {
         imported.push(
-          ...parseHookGroups(groups, nativeEvent, (event) => this.mapNativeEvent(event), "grok"),
+          ...parseHookGroups(groups, nativeEvent, (event) => this.mapNativeEvent(event), source),
         );
       }
     }
@@ -164,9 +179,11 @@ class GrokAdapter extends BaseAdapter {
  *
  * DO NOT EDIT - regenerate with: ai-hooks generate
  */
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { runGrokHook } from "@itz4blitz/ai-tools-hooks";
 
-const PROJECT_ROOT = ${JSON.stringify(resolve(process.cwd()))};
+const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 process.chdir(PROJECT_ROOT);
 
 process.exit(await runGrokHook());

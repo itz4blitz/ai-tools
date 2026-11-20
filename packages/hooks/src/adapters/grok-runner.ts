@@ -66,6 +66,20 @@ export async function runGrokHook(io: HookRunnerIO = {}): Promise<number> {
       );
       return 2;
     }
+
+    const contextNotes = results
+      .map((result) => result.data?.additionalContext)
+      .filter((value): value is string => typeof value === "string" && value.length > 0);
+    if (contextNotes.length > 0) {
+      stdout.write(
+        JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: nativeEvent,
+            additionalContext: contextNotes.join("\n"),
+          },
+        }),
+      );
+    }
     return 0;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
